@@ -24,7 +24,7 @@ WORKDIR /app
 RUN pnpm --filter @trading-platform/shared-types build \
  && pnpm --filter @trading-platform/data build \
  && pnpm --filter @trading-platform/api build \
- && pnpm --filter @trading-platform/api deploy --prod --legacy /deploy \
+ && pnpm --filter @trading-platform/api deploy --prod /deploy \
  && cp -R apps/api/prisma /deploy/prisma \
  && cp -R apps/api/dist /deploy/dist
 
