@@ -1,0 +1,50 @@
+{
+  "name": "backtest",
+  "description": "Python backtest service",
+  "billing": {
+    "deploymentPlan": "nf-compute-50",
+    "buildPlan": "nf-compute-200-8"
+  },
+  "deployment": {
+    "instances": 1,
+    "docker": { "configType": "default" }
+  },
+  "ports": [
+    {
+      "name": "p01",
+      "internalPort": 8002,
+      "public": false,
+      "protocol": "HTTP"
+    }
+  ],
+  "buildSource": "git",
+  "vcsData": {
+    "projectUrl": "https://github.com/umuttanhediyeler/trading-platform",
+    "projectType": "github",
+    "projectBranch": "main"
+  },
+  "buildSettings": {
+    "dockerfile": {
+      "buildEngine": "buildkit",
+      "dockerFilePath": "/Dockerfile",
+      "dockerWorkDir": "/packages/backtest",
+      "buildkit": { "useCache": true, "cacheStorageSize": 32768 }
+    }
+  },
+  "buildConfiguration": {
+    "pathIgnoreRules": ["apps/**", "packages/ml/**", "infra/**"]
+  },
+  "healthChecks": [
+    {
+      "protocol": "HTTP",
+      "type": "readinessProbe",
+      "path": "/health",
+      "port": 8002,
+      "initialDelaySeconds": 60,
+      "periodSeconds": 30,
+      "timeoutSeconds": 10,
+      "failureThreshold": 5,
+      "successThreshold": 1
+    }
+  ]
+}

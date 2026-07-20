@@ -1,0 +1,14 @@
+{
+  "name": "postgres",
+  "description": "Trading platform PostgreSQL",
+  "type": "postgresql",
+  "version": "16",
+  "billing": {
+    "deploymentPlan": "nf-compute-20",
+    "storage": 10240,
+    "replicas": 1
+  },
+  "customCredentials": {
+    "dbName": "trading"
+  }
+}

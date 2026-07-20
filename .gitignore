@@ -65,6 +65,7 @@ pgdata/
 redisdata/
 *.sqlite
 *.sqlite3
+infra/northflank/.env.prod
 
 # ---------------------------------------------------------------------------
 # Editor / OS

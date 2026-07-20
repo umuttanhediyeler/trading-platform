@@ -1,0 +1,11 @@
+{
+  "name": "redis",
+  "description": "Trading platform Redis",
+  "type": "redis",
+  "version": "7",
+  "billing": {
+    "deploymentPlan": "nf-compute-10",
+    "storage": 1024,
+    "replicas": 1
+  }
+}
