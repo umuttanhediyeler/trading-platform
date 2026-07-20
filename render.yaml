@@ -1,0 +1,68 @@
+# Render Blueprint — API + ML + Backtest
+# Open: https://dashboard.render.com/blueprints
+# Connect repo: umuttanhediyeler/trading-platform
+#
+# Before/during first deploy, set shared env:
+#   DATABASE_URL  → Supabase or Neon (add ?sslmode=require)
+#   REDIS_URL     → Upstash
+#   WEB_ORIGIN    → https://trading-platform-umuts-projects-225a171a.vercel.app
+# After services are live, set on API:
+#   ML_SERVICE_URL=https://apex-scan-ml.onrender.com
+#   BACKTEST_SERVICE_URL=https://apex-scan-backtest.onrender.com
+
+services:
+  - type: web
+    name: apex-scan-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./apps/api/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: ML_SERVICE_URL
+        sync: false
+      - key: BACKTEST_SERVICE_URL
+        sync: false
+      - key: WEB_ORIGIN
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: ENCRYPTION_KEY
+        generateValue: true
+      - key: ALPACA_API_KEY
+        sync: false
+      - key: ALPACA_SECRET_KEY
+        sync: false
+      - key: ALPACA_BASE_URL
+        value: https://paper-api.alpaca.markets
+      - key: MARKET_DATA_PROVIDER
+        value: alpaca
+      - key: ALLOW_LIVE_BROKER
+        value: "false"
+
+  - type: web
+    name: apex-scan-ml
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: ./packages/ml
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+
+  - type: web
+    name: apex-scan-backtest
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: ./packages/backtest
+    healthCheckPath: /health
