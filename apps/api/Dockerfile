@@ -10,6 +10,7 @@ FROM base AS deps
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json turbo.json ./
 COPY apps/api/package.json ./apps/api/package.json
 COPY packages/shared-types/package.json ./packages/shared-types/package.json
+COPY packages/data/package.json ./packages/data/package.json
 RUN pnpm install --frozen-lockfile --filter @trading-platform/api...
 
 FROM base AS builder
@@ -19,7 +20,8 @@ COPY --from=deps /app/packages ./packages
 COPY . .
 WORKDIR /app/apps/api
 RUN pnpm exec prisma generate
-RUN pnpm run build
+WORKDIR /app
+RUN pnpm turbo run build --filter=@trading-platform/api...
 
 FROM node:20-alpine AS runner
 WORKDIR /app
@@ -31,6 +33,8 @@ COPY --from=builder /app/apps/api/dist ./dist
 COPY --from=builder /app/apps/api/prisma ./prisma
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/apps/api/node_modules ./apps/api/node_modules
+COPY --from=builder /app/packages/data ./packages/data
+COPY --from=builder /app/packages/shared-types ./packages/shared-types
 USER nestjs
 EXPOSE 3001
 CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main.js"]

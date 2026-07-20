@@ -1,13 +1,14 @@
 {
   "name": "api",
-  "description": "NestJS API — auth, signals, broker, execution",
+  "description": "NestJS API auth signals broker execution",
   "billing": {
-    "deploymentPlan": "nf-compute-50",
-    "buildPlan": "nf-compute-200-8"
+    "deploymentPlan": "nf-compute-20"
   },
   "deployment": {
     "instances": 1,
-    "docker": { "configType": "default" }
+    "docker": {
+      "configType": "default"
+    }
   },
   "ports": [
     {
@@ -28,7 +29,10 @@
       "buildEngine": "buildkit",
       "dockerFilePath": "/apps/api/Dockerfile",
       "dockerWorkDir": "/",
-      "buildkit": { "useCache": true, "cacheStorageSize": 32768 }
+      "buildkit": {
+        "useCache": true,
+        "cacheStorageSize": 32768
+      }
     }
   },
   "buildConfiguration": {
