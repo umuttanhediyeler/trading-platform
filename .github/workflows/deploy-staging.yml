@@ -1,0 +1,99 @@
+name: Deploy staging
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: staging
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+
+  images:
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: api
+            context: .
+            dockerfile: apps/api/Dockerfile
+            build_args: ""
+          - name: web
+            context: .
+            dockerfile: apps/web/Dockerfile
+            build_args: |
+              NEXT_PUBLIC_API_URL=/api
+              NEXT_PUBLIC_WS_URL=
+          - name: ml
+            context: packages/ml
+            dockerfile: packages/ml/Dockerfile
+            build_args: ""
+          - name: backtest
+            context: packages/backtest
+            dockerfile: packages/backtest/Dockerfile
+            build_args: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          build-args: ${{ matrix.build_args }}
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/apex-scan-${{ matrix.name }}:staging
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+  deploy:
+    needs: images
+    if: vars.STAGING_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd "${{ vars.STAGING_APP_PATH }}"
+            export IMAGE_OWNER="${{ github.repository_owner }}"
+            COMPOSE="docker compose -f infra/docker-compose.yml -f infra/docker-compose.staging.yml"
+            $COMPOSE --profile full pull
+            $COMPOSE up -d postgres redis
+            $COMPOSE --profile full run --rm api pnpm exec prisma migrate deploy
+            $COMPOSE --profile full up -d --remove-orphans
+
+            echo "==> Post-deploy smoke check (API health via nginx)"
+            ok=false
+            for _ in $(seq 1 20); do
+              if curl -fsS http://localhost/api/health >/dev/null 2>&1; then
+                ok=true
+                break
+              fi
+              sleep 5
+            done
+            if [ "$ok" != "true" ]; then
+              echo "Health check failed after deploy; dumping status" >&2
+              $COMPOSE --profile full ps
+              exit 1
+            fi
+            echo "==> Deploy healthy"
