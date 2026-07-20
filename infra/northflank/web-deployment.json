@@ -1,0 +1,40 @@
+{
+  "name": "web",
+  "description": "Next.js frontend from GHCR image",
+  "billing": {
+    "deploymentPlan": "nf-compute-10"
+  },
+  "deployment": {
+    "instances": 1,
+    "external": {
+      "imagePath": "ghcr.io/umuttanhediyeler/trading-platform-web:latest"
+    },
+    "docker": {
+      "configType": "default"
+    },
+    "storage": {
+      "ephemeralStorage": { "storageSize": 1024 }
+    }
+  },
+  "ports": [
+    {
+      "name": "p01",
+      "internalPort": 3000,
+      "public": true,
+      "protocol": "HTTP"
+    }
+  ],
+  "healthChecks": [
+    {
+      "protocol": "HTTP",
+      "type": "readinessProbe",
+      "path": "/",
+      "port": 3000,
+      "initialDelaySeconds": 30,
+      "periodSeconds": 30,
+      "timeoutSeconds": 10,
+      "failureThreshold": 5,
+      "successThreshold": 1
+    }
+  ]
+}
