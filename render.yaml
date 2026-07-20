@@ -18,9 +18,8 @@ services:
       pnpm --filter @trading-platform/api exec prisma generate &&
       pnpm --filter @trading-platform/api build
     startCommand: |
-      cd apps/api &&
-      node ../../node_modules/prisma/build/index.js migrate deploy &&
-      node dist/main.js
+      corepack enable && corepack prepare pnpm@9.15.0 --activate &&
+      cd apps/api && pnpm exec prisma migrate deploy && node dist/main.js
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
