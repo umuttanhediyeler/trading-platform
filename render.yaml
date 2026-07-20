@@ -1,18 +1,19 @@
-# Render Blueprint — native runtimes (more reliable on Free than heavy Docker builds)
-# https://dashboard.render.com/blueprints
+# Render Blueprint
+# API needs Starter ($7): Nest monorepo build OOMs on Free 512MB.
+# ML/Backtest can stay Free (may sleep when idle).
 #
-# After create, set on each service (or paste from Desktop/render-api-env.txt):
-#   DATABASE_URL, REDIS_URL, WEB_ORIGIN, JWT_*, ENCRYPTION_KEY (64 hex chars)
+# Env (from Desktop/render-api-env.txt):
+#   DATABASE_URL, REDIS_URL, WEB_ORIGIN, JWT_*, ENCRYPTION_KEY (64 hex)
 
 services:
   - type: web
     name: apex-scan-api
     runtime: node
-    plan: free
+    plan: starter
     rootDir: .
     buildCommand: |
       corepack enable && corepack prepare pnpm@9.15.0 --activate &&
-      export NODE_OPTIONS=--max-old-space-size=460 &&
+      export NODE_OPTIONS=--max-old-space-size=768 &&
       export PNPM_NETWORK_CONCURRENCY=1 &&
       NODE_ENV=development pnpm install --no-frozen-lockfile --filter @trading-platform/api... &&
       pnpm --filter @trading-platform/shared-types build &&
