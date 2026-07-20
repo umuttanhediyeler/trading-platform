@@ -1,0 +1,26 @@
+# Prometheus scrape configuration for the trading platform.
+#
+# The NestJS API exposes a Prometheus text endpoint at /metrics (see
+# apps/api/src/metrics). Prometheus runs on the internal Docker network and is
+# NOT exposed publicly by nginx; reach the UI over an SSH tunnel if needed.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    stack: apex-scan
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: trading-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:3001"]
+        labels:
+          service: api

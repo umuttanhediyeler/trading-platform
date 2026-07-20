@@ -1,0 +1,16 @@
+# Grafana dashboard provisioning — loads every JSON dashboard mounted under
+# /var/lib/grafana/dashboards on startup.
+apiVersion: 1
+
+providers:
+  - name: apex-scan
+    orgId: 1
+    folder: Apex Scan
+    type: file
+    disableDeletion: false
+    editable: true
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

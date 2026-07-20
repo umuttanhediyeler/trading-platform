@@ -1,0 +1,2 @@
+-- BacktestRun was created by the baseline local schema before this migration
+-- was recorded. The Prisma model now mirrors that existing table.

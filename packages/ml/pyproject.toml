@@ -1,0 +1,35 @@
+[tool.poetry]
+name = "ml-service"
+version = "0.1.0"
+description = "ML service: feature engineering, triple-barrier labeling, walk-forward training, nightly strategy selection"
+authors = ["Trading Platform"]
+packages = [{ include = "app" }]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.111"
+uvicorn = "^0.29"
+pandas = "^2.2"
+numpy = "^2.0"
+# pandas-ta 0.3.14b was removed from PyPI in 2025. The maintained,
+# Python 3.11-compatible community continuation preserves the indicator API.
+pandas-ta-classic = "0.3.14b2"
+lightgbm = "^4.3"
+scikit-learn = "^1.4"
+joblib = "^1.4"
+sqlalchemy = "^2.0"
+psycopg2-binary = "^2.9"
+sentry-sdk = {version = "^2.0", extras = ["fastapi"]}
+prometheus-client = "^0.20"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.2"
+httpx = "^0.27"
+
+[build-system]
+requires = ["poetry-core>=1.9"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

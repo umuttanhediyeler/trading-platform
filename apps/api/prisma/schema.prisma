@@ -1,0 +1,302 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String   @id @default(uuid())
+  email         String   @unique
+  passwordHash  String?
+  provider      String   @default("credentials") // "credentials" | "google"
+  createdAt     DateTime @default(now())
+  subscription  Subscription?
+  simAccount    SimulatedAccount?
+  brokerLink    BrokerLink?
+  brokerOrders  BrokerOrderLedger[]
+  riskSettings  RiskSettings?
+  executionMode String   @default("manual") // manual | one_click | full_auto
+  watchlists    Watchlist[]
+  backtestRuns  BacktestRun[]
+  backtestQuotaLedger BacktestQuotaLedger[]
+}
+
+model Subscription {
+  id                String   @id @default(uuid())
+  userId            String   @unique
+  user              User     @relation(fields: [userId], references: [id])
+  planTier          String   @default("free") // free | basic | premium
+  status            String   @default("active") // active | past_due | canceled
+  stripeCustomerId  String?
+  stripeSubId       String?
+  currentPeriodEnd  DateTime?
+}
+
+model Entitlement {
+  id       String  @id @default(uuid())
+  planTier String
+  key      String  // "ai_signals_enabled" | "auto_trade_enabled" | "max_watchlists" ...
+  value    String  // "true" | "false" | "50" — parsed in the service layer
+
+  @@unique([planTier, key])
+}
+
+model Watchlist {
+  id      String @id @default(uuid())
+  userId  String
+  user    User   @relation(fields: [userId], references: [id])
+  name    String
+  symbols String[] // Postgres text[]
+}
+
+model ScanDefinition {
+  id        String   @id @default(uuid())
+  userId    String
+  name      String
+  filterDSL Json     // filter combination stored as JSON AST
+  createdAt DateTime @default(now())
+}
+
+model Signal {
+  id             String      @id @default(uuid())
+  symbol         String
+  strategyId     String
+  entryPrice     Decimal
+  stopPrice      Decimal
+  targetPrice    Decimal
+  confidence     Float
+  generatedAt    DateTime    @default(now())
+  status         String      @default("open") // open | hit_target | hit_stop | expired
+  resolvedAt     DateTime?
+  resolvedPrice  Decimal?
+  realizedReturn Float?
+  modelVersion   String?
+  predictionId   String?     @unique
+  prediction     Prediction? @relation(fields: [predictionId], references: [id])
+
+  @@index([status, generatedAt])
+  @@index([modelVersion, status])
+}
+
+model DailyStrategySelection {
+  id          String   @id @default(uuid())
+  date        DateTime
+  strategyId  String
+  regime      String   // trend | range | high_vol
+  rank        Int
+
+  @@unique([date, rank])
+  @@index([date, regime])
+}
+
+model ModelRegistry {
+  id              String                     @id @default(uuid())
+  version         String                     @unique
+  trainedAt       DateTime                   @default(now())
+  precision       Float
+  recall          Float
+  expectancy      Float
+  maxDrawdown     Float
+  regime          String
+  isActive        Boolean                    @default(false)
+  status          String                     @default("shadow") // shadow | active | rejected
+  artifactPath    String?
+  artifactSha256  String?
+  trainingSamples Int?
+  promotedAt      DateTime?
+  promotionReason String?
+  /// Start of the current live shadow-soak window. Reset on rollback so a
+  /// demoted champion must re-earn promotion on fresh shadow outcomes.
+  shadowStartedAt DateTime?
+  performance     ModelPerformanceSnapshot[]
+  shadowEvaluations ShadowEvaluation[]
+
+  @@index([regime, isActive])
+}
+
+model Prediction {
+  id            String         @id @default(uuid())
+  symbol        String
+  modelVersion  String?
+  predictedLabel String
+  confidence    Float
+  probabilities Json
+  regime        String
+  fallback      Boolean        @default(false)
+  /// True for challenger inferences produced during shadow soak. These rows
+  /// are never joined into user-facing signal analytics.
+  shadow        Boolean        @default(false)
+  features      Json?
+  featureTimestamp DateTime?
+  dataCutoff    DateTime?
+  createdAt     DateTime       @default(now())
+  actualLabel   String?
+  resolvedAt    DateTime?
+  signal        Signal?
+  shadowEvaluation ShadowEvaluation?
+
+  @@index([symbol, createdAt])
+  @@index([modelVersion, createdAt])
+  @@index([shadow, createdAt])
+}
+
+/// A hidden paper trade produced by a shadow (challenger) model. Mirrors the
+/// Signal lifecycle but is never emitted over WebSocket, never shown to users,
+/// and never opens simulated orders. Resolved rows feed the live promotion
+/// gates in ModelLifecycleService.
+model ShadowEvaluation {
+  id             String        @id @default(uuid())
+  modelVersion   String
+  model          ModelRegistry @relation(fields: [modelVersion], references: [version])
+  symbol         String
+  entryPrice     Decimal
+  stopPrice      Decimal
+  targetPrice    Decimal
+  confidence     Float
+  generatedAt    DateTime      @default(now())
+  status         String        @default("open") // open | hit_target | hit_stop | expired
+  resolvedAt     DateTime?
+  resolvedPrice  Decimal?
+  realizedReturn Float?
+  predictionId   String?       @unique
+  prediction     Prediction?   @relation(fields: [predictionId], references: [id])
+
+  @@index([status, generatedAt])
+  @@index([modelVersion, status, generatedAt])
+}
+
+model ModelPerformanceSnapshot {
+  id             String        @id @default(uuid())
+  modelVersion   String
+  model          ModelRegistry @relation(fields: [modelVersion], references: [version])
+  calculatedAt   DateTime      @default(now())
+  sampleSize     Int
+  wins           Int
+  losses         Int
+  expired        Int
+  hitRate        Float?
+  averageReturn  Float?
+
+  @@index([modelVersion, calculatedAt])
+}
+
+model SimulatedAccount {
+  id       String  @id @default(uuid())
+  userId   String  @unique
+  user     User    @relation(fields: [userId], references: [id])
+  balance  Decimal @default(100000)
+}
+
+model SimulatedOrder {
+  id             String   @id @default(uuid())
+  accountId      String
+  symbol         String
+  side           String   // buy | sell
+  quantity       Int
+  entryPrice     Decimal
+  exitPrice      Decimal?
+  stopPrice      Decimal
+  targetPrice    Decimal
+  status         String   @default("open") // open | closed
+  openedAt       DateTime @default(now())
+  closedAt       DateTime?
+  pnl            Decimal?
+  source         String   // "manual" | "ai_signal"
+}
+
+model RiskSettings {
+  id                  String    @id @default(uuid())
+  userId              String    @unique
+  user                User      @relation(fields: [userId], references: [id])
+  maxDailyTrades      Int       @default(5)
+  maxDailyLossPercent Float     @default(2.0)
+  maxRiskPerTrade     Float     @default(1.0)
+  killSwitchActive    Boolean   @default(false)
+  killSwitchReason    String?
+  killSwitchAt        DateTime?
+}
+
+model BrokerLink {
+  id           String   @id @default(uuid())
+  userId       String   @unique
+  user         User     @relation(fields: [userId], references: [id])
+  broker       String   // adapter key: "alpaca" | "binance"
+  apiKeyEnc    String   // AES-256-GCM encrypted, plaintext is NEVER stored
+  apiSecretEnc String
+  mode         String   @default("paper") // paper | live
+  connectedAt  DateTime @default(now())
+}
+
+/// Durable record of every broker submission attempt. The user-scoped
+/// clientOrderId constraint is the local idempotency boundary.
+model BrokerOrderLedger {
+  id              String   @id @default(uuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id])
+  broker          String
+  mode            String
+  clientOrderId   String
+  brokerOrderId   String?
+  symbol          String
+  side            String
+  quantity        Int
+  orderType       String
+  limitPrice      Decimal?
+  source          String
+  signalId        String?
+  status          String   @default("pending") // pending | submitted | failed | canceled
+  brokerStatus    String?
+  requestPayload  Json
+  responsePayload Json?
+  failureReason   String?
+  submittedAt     DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([userId, clientOrderId])
+  @@index([userId, createdAt])
+  @@index([status, updatedAt])
+}
+
+model BacktestRun {
+  id           String   @id @default(uuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id])
+  symbol       String
+  strategyId   String
+  params       Json
+  periodFrom   DateTime
+  periodTo     DateTime
+  barCount     Int
+  totalReturn  Float
+  sharpe       Float
+  maxDrawdown  Float
+  winRate      Float
+  expectancy   Float
+  profitFactor Float
+  equityCurve  Json
+  createdAt    DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+/// Auditable quota reservation for every accepted backtest request. Reservations
+/// count toward quota even when downstream market data or the engine fails.
+model BacktestQuotaLedger {
+  id            String   @id @default(uuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  periodStart   DateTime
+  strategyId    String
+  symbol        String
+  status        String   @default("reserved") // reserved | completed | failed
+  failureReason String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([userId, periodStart])
+  @@index([status, createdAt])
+}

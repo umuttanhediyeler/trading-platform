@@ -1,0 +1,137 @@
+import {
+  Injectable,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import {
+  BrokerAdapter,
+  BrokerCredentials,
+  BrokerOrder,
+  BrokerOrderRequest,
+  BrokerPosition,
+} from './broker-adapter.interface';
+
+const PAPER_URL = 'https://paper-api.alpaca.markets';
+const LIVE_URL = 'https://api.alpaca.markets';
+
+@Injectable()
+export class AlpacaAdapter implements BrokerAdapter {
+  readonly name = 'alpaca' as const;
+  readonly capabilities = {
+    marketOrders: true,
+    limitOrders: true,
+    bracketOrders: true,
+    fractionalQuantity: true,
+    positions: 'full',
+    paper: true,
+    live: true,
+  } as const;
+
+  async placeOrder(
+    creds: BrokerCredentials,
+    order: BrokerOrderRequest,
+  ): Promise<BrokerOrder> {
+    const body: Record<string, unknown> = {
+      symbol: order.symbol,
+      qty: String(order.quantity),
+      side: order.side,
+      type: order.type,
+      time_in_force: 'day',
+      limit_price: order.limitPrice ? String(order.limitPrice) : undefined,
+      client_order_id: order.clientOrderId,
+    };
+    if (order.orderClass === 'bracket') {
+      if (!order.takeProfitPrice || !order.stopLossPrice) {
+        throw new Error(
+          'Bracket orders require takeProfitPrice and stopLossPrice',
+        );
+      }
+      body.order_class = 'bracket';
+      body.take_profit = { limit_price: String(order.takeProfitPrice) };
+      body.stop_loss = { stop_price: String(order.stopLossPrice) };
+    }
+    const data = await this.request(creds, 'POST', '/v2/orders', body);
+    return this.mapOrder(data);
+  }
+
+  async getOrderByClientOrderId(
+    creds: BrokerCredentials,
+    clientOrderId: string,
+    _symbol: string,
+  ): Promise<BrokerOrder> {
+    const query = new URLSearchParams({
+      client_order_id: clientOrderId,
+    }).toString();
+    const data = await this.request(
+      creds,
+      'GET',
+      `/v2/orders:by_client_order_id?${query}`,
+    );
+    return this.mapOrder(data);
+  }
+
+  private mapOrder(data: any): BrokerOrder {
+    return {
+      id: data.id,
+      clientOrderId: data.client_order_id,
+      symbol: data.symbol,
+      side: data.side,
+      quantity: Number(data.qty),
+      status: data.status,
+      filledQty: data.filled_qty != null ? Number(data.filled_qty) : undefined,
+      filledAvgPrice:
+        data.filled_avg_price != null ? Number(data.filled_avg_price) : null,
+    };
+  }
+
+  async cancelOrder(
+    creds: BrokerCredentials,
+    orderId: string,
+    _symbol: string,
+  ): Promise<void> {
+    await this.request(creds, 'DELETE', `/v2/orders/${orderId}`);
+  }
+
+  async getPositions(creds: BrokerCredentials): Promise<BrokerPosition[]> {
+    const data = await this.request(creds, 'GET', '/v2/positions');
+    return (data as any[]).map((p) => ({
+      symbol: p.symbol,
+      quantity: Number(p.qty),
+      avgEntryPrice: Number(p.avg_entry_price),
+      marketValue: Number(p.market_value),
+      unrealizedPnl: Number(p.unrealized_pl),
+    }));
+  }
+
+  async getAccountBalance(
+    creds: BrokerCredentials,
+  ): Promise<{ cash: number; equity: number }> {
+    const data = await this.request(creds, 'GET', '/v2/account');
+    return { cash: Number(data.cash), equity: Number(data.equity) };
+  }
+
+  private async request(
+    creds: BrokerCredentials,
+    method: string,
+    path: string,
+    body?: Record<string, unknown>,
+  ): Promise<any> {
+    const baseUrl = creds.mode === 'live' ? LIVE_URL : PAPER_URL;
+    const res = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        'APCA-API-KEY-ID': creds.apiKey,
+        'APCA-API-SECRET-KEY': creds.apiSecret,
+        'Content-Type': 'application/json',
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new ServiceUnavailableException(
+        `Alpaca ${method} ${path} failed: ${res.status} ${text}`,
+      );
+    }
+    if (res.status === 204) return undefined;
+    return res.json();
+  }
+}

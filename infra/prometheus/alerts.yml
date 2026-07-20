@@ -1,0 +1,34 @@
+# Prometheus alerting rules. These fire inside Prometheus and are visible in the
+# Grafana "API Overview" dashboard and the Prometheus /alerts page. Wiring an
+# Alertmanager is optional; the platform's own AlertsService (webhook + email)
+# covers application-level operational alerts independently.
+
+groups:
+  - name: api-availability
+    rules:
+      - alert: ApiDown
+        expr: up{job="trading-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Trading API is not being scraped"
+          description: "Prometheus has failed to scrape the API /metrics endpoint for >2m."
+
+      - alert: ApiHighEventLoopLag
+        expr: api_nodejs_eventloop_lag_seconds > 0.2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API event loop lag is high"
+          description: "Node.js event loop lag has exceeded 200ms for 5 minutes."
+
+      - alert: ApiHighResidentMemory
+        expr: api_process_resident_memory_bytes > 1.5e9
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API resident memory is high"
+          description: "API RSS has exceeded 1.5GB for 10 minutes."

@@ -1,0 +1,14 @@
+.uv-cache
+.uv-python
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.venv
+venv
+.env
+*.md
+tests
+data
+*.log
+.DS_Store

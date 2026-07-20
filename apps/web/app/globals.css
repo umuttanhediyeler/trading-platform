@@ -1,0 +1,173 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Dark theme: pure black / neutral grays (zero hue tint — no navy).
+ * Brand: metallic silver primary + steel accent (monochrome, Innoplatforms
+ * style). Success/destructive stay green/red — they are semantic P&L colors.
+ */
+:root {
+  --background: 0 0% 4%;
+  --foreground: 0 0% 96%;
+  --card: 0 0% 7%;
+  --card-foreground: 0 0% 96%;
+  --primary: 210 6% 74%;
+  --primary-foreground: 0 0% 7%;
+  --secondary: 0 0% 13%;
+  --secondary-foreground: 0 0% 90%;
+  --muted: 0 0% 11%;
+  --muted-foreground: 0 0% 60%;
+  --accent: 210 10% 88%;
+  --accent-foreground: 0 0% 7%;
+  --destructive: 0 72% 46%;
+  --destructive-foreground: 0 0% 98%;
+  --success: 152 60% 40%;
+  --success-foreground: 152 80% 96%;
+  --warning: 38 92% 50%;
+  --warning-foreground: 38 95% 10%;
+  --border: 0 0% 15%;
+  --input: 0 0% 15%;
+  --ring: 210 6% 74%;
+  --panel: 0 0% 6%;
+  --terminal: 0 0% 2%;
+  --radius: 0.5rem;
+}
+
+.light {
+  --background: 210 40% 98%;
+  --foreground: 222 47% 11%;
+  --card: 0 0% 100%;
+  --card-foreground: 222 47% 11%;
+  --primary: 210 6% 38%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 214 20% 92%;
+  --secondary-foreground: 222 47% 11%;
+  --muted: 214 20% 94%;
+  --muted-foreground: 215 16% 40%;
+  --accent: 210 8% 55%;
+  --accent-foreground: 0 0% 100%;
+  --destructive: 0 72% 46%;
+  --destructive-foreground: 0 0% 98%;
+  --success: 152 60% 32%;
+  --success-foreground: 0 0% 100%;
+  --warning: 38 92% 45%;
+  --warning-foreground: 38 95% 10%;
+  --border: 214 20% 88%;
+  --input: 214 20% 88%;
+  --ring: 210 6% 38%;
+  --panel: 210 30% 96%;
+  --terminal: 210 40% 97%;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    @apply antialiased;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans;
+  }
+
+  h1,
+  h2,
+  h3 {
+    @apply font-display tracking-tight;
+  }
+
+  ::selection {
+    @apply bg-primary/30 text-foreground;
+  }
+}
+
+@layer utilities {
+  .terminal-grid {
+    background-image:
+      linear-gradient(to right, hsl(var(--border) / 0.35) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(var(--border) / 0.35) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+
+  .aurora-blob {
+    position: absolute;
+    border-radius: 9999px;
+    filter: blur(90px);
+    animation: aurora-drift 18s ease-in-out infinite alternate;
+    will-change: transform;
+  }
+
+  .animate-gradient-x {
+    animation: gradient-x 6s linear infinite;
+  }
+
+  .animate-shine {
+    animation: shine 3s linear infinite;
+  }
+
+  .animate-marquee {
+    animation: marquee 30s linear infinite;
+  }
+
+  .animate-specular-sweep {
+    animation: specular-sweep 4s ease-in-out infinite;
+  }
+
+  .glass-panel {
+    background: hsl(var(--card) / 0.65);
+    backdrop-filter: blur(12px);
+    border: 1px solid hsl(var(--border) / 0.8);
+  }
+}
+
+@keyframes aurora-drift {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(6%, -4%, 0) scale(1.15);
+  }
+  100% {
+    transform: translate3d(-5%, 6%, 0) scale(0.95);
+  }
+}
+
+@keyframes gradient-x {
+  0% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: 200% 50%;
+  }
+}
+
+@keyframes shine {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+@keyframes marquee {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-100%);
+  }
+}
+
+@keyframes specular-sweep {
+  0%,
+  60% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -50% 0;
+  }
+}
