@@ -92,6 +92,15 @@ export class AutoTradeWorker implements OnModuleInit, OnModuleDestroy {
         continue;
       }
       for (const signal of signals) {
+        const clientOrderId = `${signal.id}:${user.id}`.slice(0, 48);
+        const existing = await this.prisma.brokerOrderLedger.findUnique({
+          where: {
+            userId_clientOrderId: { userId: user.id, clientOrderId },
+          },
+          select: { id: true },
+        });
+        if (existing) continue;
+
         try {
           const entry = Number(signal.entryPrice);
           const stop = Number(signal.stopPrice);
@@ -122,7 +131,7 @@ export class AutoTradeWorker implements OnModuleInit, OnModuleDestroy {
               side: 'buy',
               quantity: Math.min(qty, 10),
               type: 'market',
-              clientOrderId: `${signal.id}:${user.id}`.slice(0, 48),
+              clientOrderId,
               entryPriceHint: entry > 0 ? entry : undefined,
               ...(useBracket
                 ? {

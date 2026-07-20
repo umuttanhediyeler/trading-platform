@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SpotlightCard } from "@/components/reactbits/SpotlightCard";
+import { SymbolWithLogo } from "@/components/shared/StockLogo";
 import { SignalConfidenceBadge } from "./SignalConfidenceBadge";
 import { apiClient } from "@/lib/api-client";
 import { hasEntitlement } from "@/lib/entitlements";
@@ -79,7 +80,7 @@ export function SignalCard({
       <div className="p-5 pb-2">
         <div className="flex items-start justify-between gap-2">
           <div>
-            <h3 className="font-mono text-lg font-semibold tracking-wide">{signal.symbol}</h3>
+            <SymbolWithLogo symbol={signal.symbol} size="md" symbolClassName="text-lg" />
             <p className="mt-1 font-mono text-xs text-muted-foreground">{signal.strategyId}</p>
           </div>
           <div className="flex flex-col items-end gap-1">

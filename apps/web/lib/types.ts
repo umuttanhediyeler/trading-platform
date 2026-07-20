@@ -146,6 +146,7 @@ export interface BrokerOrderLedgerEntry {
 export interface BrokerReconcileResult {
   checked: number;
   updated: number;
+  cleaned?: number;
   errors: Array<{ clientOrderId: string; message: string }>;
 }
 

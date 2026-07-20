@@ -13,6 +13,8 @@ import {
 import { SpotlightCard } from "@/components/reactbits/SpotlightCard";
 import { CountUp } from "@/components/reactbits/CountUp";
 import { FadeIn } from "@/components/reactbits/FadeIn";
+import { AnimatedList } from "@/components/reactbits/AnimatedList";
+import { SymbolWithLogo } from "@/components/shared/StockLogo";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -163,6 +165,7 @@ export default function OrdersPage() {
       const result = await apiClient.reconcileBrokerOrders(session.accessToken);
       setNotice(
         `Mutabakat: ${result.checked} kontrol · ${result.updated} güncellendi` +
+          (result.cleaned ? ` · ${result.cleaned} eski kayıt temizlendi` : "") +
           (result.errors.length ? ` · ${result.errors.length} hata` : ""),
       );
       await load({ silent: true });
@@ -289,49 +292,61 @@ export default function OrdersPage() {
                 }}
               />
             ) : (
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Sembol</TableHead>
-                      <TableHead>Yön</TableHead>
-                      <TableHead>Adet</TableHead>
-                      <TableHead>Tip</TableHead>
-                      <TableHead>Durum</TableHead>
-                      <TableHead>Kaynak</TableHead>
-                      <TableHead>Broker ID</TableHead>
-                      <TableHead>Tarih</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {orders.map((order) => (
-                      <TableRow key={order.id}>
-                        <TableCell className="font-mono">{order.symbol}</TableCell>
-                        <TableCell>{sideLabel(order.side)}</TableCell>
-                        <TableCell className="font-mono">{order.quantity}</TableCell>
-                        <TableCell className="font-mono text-xs uppercase">
-                          {order.orderType}
-                        </TableCell>
-                        <TableCell className={cn("font-mono text-xs", statusTone(order.status))}>
-                          {statusLabel(order.status)}
-                          {order.brokerStatus ? (
-                            <span className="ml-1 text-muted-foreground">
-                              ({order.brokerStatus})
-                            </span>
-                          ) : null}
-                        </TableCell>
-                        <TableCell>{sourceBadge(order.source)}</TableCell>
-                        <TableCell className="font-mono text-xs text-muted-foreground">
-                          {shortenId(order.brokerOrderId)}
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                          {formatDate(order.createdAt)}
-                        </TableCell>
+              <AnimatedList maxVisible={12} itemHeight={52}>
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Sembol</TableHead>
+                        <TableHead>Yön</TableHead>
+                        <TableHead>Adet</TableHead>
+                        <TableHead>Tip</TableHead>
+                        <TableHead>Durum</TableHead>
+                        <TableHead>Kaynak</TableHead>
+                        <TableHead>Broker ID</TableHead>
+                        <TableHead>Tarih</TableHead>
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
+                    </TableHeader>
+                    <TableBody>
+                      {orders.map((order) => (
+                        <TableRow key={order.id}>
+                          <TableCell>
+                            <SymbolWithLogo symbol={order.symbol} size="sm" />
+                          </TableCell>
+                          <TableCell>{sideLabel(order.side)}</TableCell>
+                          <TableCell className="font-mono">{order.quantity}</TableCell>
+                          <TableCell className="font-mono text-xs uppercase">
+                            {order.orderType}
+                          </TableCell>
+                          <TableCell className={cn("font-mono text-xs", statusTone(order.status))}>
+                            {statusLabel(order.status)}
+                            {order.brokerStatus ? (
+                              <span className="ml-1 text-muted-foreground">
+                                ({order.brokerStatus})
+                              </span>
+                            ) : null}
+                            {order.failureReason ? (
+                              <span
+                                className="mt-0.5 block max-w-[12rem] truncate text-[10px] text-muted-foreground"
+                                title={order.failureReason}
+                              >
+                                {order.failureReason}
+                              </span>
+                            ) : null}
+                          </TableCell>
+                          <TableCell>{sourceBadge(order.source)}</TableCell>
+                          <TableCell className="font-mono text-xs text-muted-foreground">
+                            {shortenId(order.brokerOrderId)}
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                            {formatDate(order.createdAt)}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </AnimatedList>
             )}
           </CardContent>
         </SpotlightCard>

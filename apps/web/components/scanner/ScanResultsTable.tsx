@@ -19,6 +19,8 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState, LoadingBlock } from "@/components/shared/states";
+import { SymbolWithLogo } from "@/components/shared/StockLogo";
+import { AnimatedList } from "@/components/reactbits/AnimatedList";
 import type { ScanRow } from "@/lib/types";
 import { formatNumber, formatPercent, cn } from "@/lib/utils";
 
@@ -45,11 +47,7 @@ export function ScanResultsTable({
     () => [
       columnHelper.accessor("symbol", {
         header: "Symbol",
-        cell: (info) => (
-          <span className="font-mono font-semibold tracking-wide text-foreground">
-            {info.getValue()}
-          </span>
-        ),
+        cell: (info) => <SymbolWithLogo symbol={info.getValue()} size="sm" />,
       }),
       columnHelper.accessor("price", {
         header: "Price",
@@ -126,7 +124,8 @@ export function ScanResultsTable({
 
   return (
     <div className="overflow-hidden rounded-2xl border border-border bg-card/80 backdrop-blur">
-      <Table>
+      <AnimatedList maxVisible={12} itemHeight={52}>
+        <Table>
         <TableHeader>
           {table.getHeaderGroups().map((hg) => (
             <TableRow key={hg.id} className="hover:bg-transparent">
@@ -163,6 +162,7 @@ export function ScanResultsTable({
           ))}
         </TableBody>
       </Table>
+      </AnimatedList>
     </div>
   );
 }

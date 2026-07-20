@@ -76,6 +76,15 @@ const config: Config = {
       boxShadow: {
         panel: "0 0 0 1px hsl(var(--border))",
       },
+      keyframes: {
+        "sheet-up": {
+          from: { transform: "translateY(100%)", opacity: "0.6" },
+          to: { transform: "translateY(0)", opacity: "1" },
+        },
+      },
+      animation: {
+        "sheet-up": "sheet-up 0.28s ease-out",
+      },
     },
   },
   plugins: [],

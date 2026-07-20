@@ -6,6 +6,7 @@ import { SignalCard } from "@/components/signals/SignalCard";
 import { EmptyState, ErrorState, LoadingBlock } from "@/components/shared/states";
 import { Badge } from "@/components/ui/badge";
 import { FadeIn } from "@/components/reactbits/FadeIn";
+import { AnimatedList } from "@/components/reactbits/AnimatedList";
 import { SpecularButton } from "@/components/reactbits/SpecularButton";
 import { apiClient } from "@/lib/api-client";
 import { useExecutionStore } from "@/lib/store";
@@ -218,17 +219,19 @@ export default function SignalsPage() {
               }
             />
           ) : null}
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {signals.map((s) => (
-              <SignalCard
-                key={s.id}
-                signal={s}
-                token={session?.accessToken}
-                broker={tradeProfile?.broker ?? null}
-                maxRiskPerTrade={tradeProfile?.maxRiskPerTrade ?? null}
-              />
-            ))}
-          </div>
+          <AnimatedList maxVisible={9} itemHeight={180}>
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {signals.map((s) => (
+                <SignalCard
+                  key={s.id}
+                  signal={s}
+                  token={session?.accessToken}
+                  broker={tradeProfile?.broker ?? null}
+                  maxRiskPerTrade={tradeProfile?.maxRiskPerTrade ?? null}
+                />
+              ))}
+            </div>
+          </AnimatedList>
         </div>
       </FadeIn>
     </div>

@@ -1,4 +1,4 @@
-import { ConflictException, ForbiddenException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, HttpException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { RiskGuardService } from '../execution/risk-guard.service';
@@ -34,6 +34,8 @@ describe('BrokerOrderService', () => {
     brokerOrderLedger: {
       create: jest.Mock;
       update: jest.Mock;
+      delete: jest.Mock;
+      findUnique: jest.Mock;
       findUniqueOrThrow: jest.Mock;
     };
   };
@@ -50,6 +52,8 @@ describe('BrokerOrderService', () => {
       brokerOrderLedger: {
         create: jest.fn().mockResolvedValue({}),
         update: jest.fn().mockResolvedValue({}),
+        delete: jest.fn().mockResolvedValue({}),
+        findUnique: jest.fn().mockResolvedValue(null),
         findUniqueOrThrow: jest.fn(),
       },
     };
@@ -114,13 +118,7 @@ describe('BrokerOrderService', () => {
   });
 
   it('returns the prior response without another risk check or broker call', async () => {
-    prisma.brokerOrderLedger.create.mockRejectedValue(
-      new Prisma.PrismaClientKnownRequestError('duplicate', {
-        code: 'P2002',
-        clientVersion: '5.22.0',
-      }),
-    );
-    prisma.brokerOrderLedger.findUniqueOrThrow.mockResolvedValue({
+    prisma.brokerOrderLedger.findUnique.mockResolvedValue({
       status: 'submitted',
       responsePayload: response,
     });
@@ -130,16 +128,11 @@ describe('BrokerOrderService', () => {
     ).resolves.toEqual(response);
     expect(riskGuard.assertCanTrade).not.toHaveBeenCalled();
     expect(adapter.placeOrder).not.toHaveBeenCalled();
+    expect(prisma.brokerOrderLedger.create).not.toHaveBeenCalled();
   });
 
   it('rejects a duplicate key whose original submission is unresolved', async () => {
-    prisma.brokerOrderLedger.create.mockRejectedValue(
-      new Prisma.PrismaClientKnownRequestError('duplicate', {
-        code: 'P2002',
-        clientVersion: '5.22.0',
-      }),
-    );
-    prisma.brokerOrderLedger.findUniqueOrThrow.mockResolvedValue({
+    prisma.brokerOrderLedger.findUnique.mockResolvedValue({
       status: 'pending',
       responsePayload: null,
     });
@@ -164,7 +157,19 @@ describe('BrokerOrderService', () => {
     expect(prisma.brokerOrderLedger.create).not.toHaveBeenCalled();
   });
 
-  it('records failures and never retries a consumed client order id', async () => {
+  it('removes the ledger row on expected risk rejections instead of marking failed', async () => {
+    riskGuard.assertCanTrade.mockRejectedValue(
+      new ForbiddenException('Daily trade limit reached (5)'),
+    );
+
+    await expect(
+      service.submit('user-1', credentials, request, { source: 'one_click' }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.brokerOrderLedger.delete).toHaveBeenCalled();
+    expect(prisma.brokerOrderLedger.update).not.toHaveBeenCalled();
+  });
+
+  it('records broker failures and never retries a consumed client order id', async () => {
     (adapter.placeOrder as jest.Mock).mockRejectedValue(new Error('timeout'));
 
     await expect(
@@ -178,5 +183,24 @@ describe('BrokerOrderService', () => {
         }),
       }),
     );
+    expect(prisma.brokerOrderLedger.delete).not.toHaveBeenCalled();
+  });
+
+  it('still resolves duplicate create races via unique constraint', async () => {
+    prisma.brokerOrderLedger.findUnique.mockResolvedValue(null);
+    prisma.brokerOrderLedger.create.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError('duplicate', {
+        code: 'P2002',
+        clientVersion: '5.22.0',
+      }),
+    );
+    prisma.brokerOrderLedger.findUniqueOrThrow.mockResolvedValue({
+      status: 'submitted',
+      responsePayload: response,
+    });
+
+    await expect(
+      service.submit('user-1', credentials, request, { source: 'one_click' }),
+    ).resolves.toEqual(response);
   });
 });

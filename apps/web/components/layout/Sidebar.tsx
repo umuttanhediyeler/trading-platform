@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import {
   Activity,
   BarChart3,
@@ -10,9 +11,11 @@ import {
   LayoutDashboard,
   LineChart,
   ListOrdered,
+  Menu,
   Radar,
   Settings,
   Wallet,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -45,6 +48,13 @@ const NAV_SECTIONS = [
 ];
 
 const NAV = NAV_SECTIONS.flatMap((section) => section.items);
+
+const MOBILE_TABS = [
+  { href: "/dashboard", label: "Ana", icon: LayoutDashboard },
+  { href: "/scanner", label: "Tara", icon: Radar },
+  { href: "/signals", label: "Sinyal", icon: Activity },
+  { href: "/orders", label: "Emir", icon: ListOrdered },
+];
 
 export function Sidebar({ className }: { className?: string }) {
   const pathname = usePathname();
@@ -122,27 +132,121 @@ export function Sidebar({ className }: { className?: string }) {
 
 export function MobileNav() {
   const pathname = usePathname();
-  const items = NAV.slice(0, 5);
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [menuOpen]);
 
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-40 flex border-t border-border/60 bg-background/90 backdrop-blur-md lg:hidden">
-      {items.map((item) => {
-        const active = pathname === item.href;
-        const Icon = item.icon;
-        return (
-          <Link
-            key={item.href}
-            href={item.href}
+    <>
+      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-border/60 bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md lg:hidden">
+        <div className="flex items-stretch">
+          {MOBILE_TABS.map((item) => {
+            const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+            const Icon = item.icon;
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={cn(
+                  "flex min-h-[56px] flex-1 flex-col items-center justify-center gap-0.5 px-1 py-2 text-[10px] font-medium transition-colors duration-200",
+                  active ? "text-primary" : "text-muted-foreground",
+                )}
+              >
+                <Icon className={cn("h-5 w-5", active && "scale-110")} />
+                {item.label}
+              </Link>
+            );
+          })}
+          <button
+            type="button"
+            aria-expanded={menuOpen}
+            aria-label="Menüyü aç"
+            onClick={() => setMenuOpen(true)}
             className={cn(
-              "flex flex-1 flex-col items-center gap-1 py-2 text-[10px] transition-colors duration-200",
-              active ? "text-primary" : "text-muted-foreground",
+              "flex min-h-[56px] min-w-[4.5rem] flex-col items-center justify-center gap-0.5 px-2 py-2 text-[10px] font-medium transition-colors",
+              menuOpen ? "text-primary" : "text-muted-foreground",
             )}
           >
-            <Icon className="h-4 w-4" />
-            {item.label}
-          </Link>
-        );
-      })}
-    </nav>
+            <Menu className="h-5 w-5" />
+            Menü
+          </button>
+        </div>
+      </nav>
+
+      {menuOpen ? (
+        <div className="fixed inset-0 z-50 lg:hidden">
+          <button
+            type="button"
+            aria-label="Menüyü kapat"
+            className="absolute inset-0 bg-background/70 backdrop-blur-sm"
+            onClick={() => setMenuOpen(false)}
+          />
+          <div className="absolute inset-x-0 bottom-0 max-h-[85vh] overflow-hidden rounded-t-3xl border border-border/60 bg-card shadow-2xl motion-safe:animate-sheet-up">
+            <div className="flex items-center justify-between border-b border-border/60 px-5 py-4">
+              <div>
+                <p className="font-display text-lg font-semibold">Apex Scan</p>
+                <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
+                  Tüm sayfalar
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-label="Kapat"
+                onClick={() => setMenuOpen(false)}
+                className="rounded-full p-2 text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="max-h-[calc(85vh-4rem)] overflow-y-auto px-3 py-4 pb-[calc(1rem+env(safe-area-inset-bottom))]">
+              {NAV_SECTIONS.map((section) => (
+                <div key={section.label} className="mb-5">
+                  <p className="px-3 pb-2 text-[10px] uppercase tracking-[0.3em] text-muted-foreground/70">
+                    {section.label}
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {section.items.map((item) => {
+                      const active =
+                        pathname === item.href || pathname.startsWith(`${item.href}/`);
+                      const Icon = item.icon;
+                      const inPrimary = MOBILE_TABS.some((tab) => tab.href === item.href);
+                      if (inPrimary) return null;
+                      return (
+                        <Link
+                          key={item.href}
+                          href={item.href}
+                          className={cn(
+                            "flex items-center gap-2.5 rounded-xl border px-3 py-3 text-sm transition-colors",
+                            active
+                              ? "border-primary/40 bg-primary/10 text-foreground"
+                              : "border-border/60 bg-background/60 text-muted-foreground hover:text-foreground",
+                          )}
+                        >
+                          <Icon className={cn("h-4 w-4 shrink-0", active && "text-primary")} />
+                          <span className="truncate">{item.label}</span>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
+
+export { NAV, NAV_SECTIONS };

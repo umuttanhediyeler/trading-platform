@@ -1,6 +1,7 @@
 import {
   ConflictException,
   ForbiddenException,
+  HttpException,
   Injectable,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -43,26 +44,40 @@ export class BrokerOrderService {
         userId,
         broker: credentials.broker,
         mode: credentials.mode,
-        status: { in: ['pending', 'submitted'] },
+        status: { in: ['pending', 'submitted', 'failed'] },
       },
       orderBy: { updatedAt: 'asc' },
-      take: 100,
+      take: 200,
     });
     let updated = 0;
+    let cleaned = 0;
     const errors: Array<{ clientOrderId: string; message: string }> = [];
 
     for (const ledgerOrder of ledgerOrders) {
+      if (
+        ledgerOrder.status === 'failed' &&
+        !ledgerOrder.brokerOrderId &&
+        this.isExpectedFailureReason(ledgerOrder.failureReason)
+      ) {
+        await this.prisma.brokerOrderLedger
+          .delete({ where: { id: ledgerOrder.id } })
+          .catch(() => undefined);
+        cleaned += 1;
+        continue;
+      }
+
       try {
         const brokerOrder = await adapter.getOrderByClientOrderId(
           credentials,
           ledgerOrder.clientOrderId,
           ledgerOrder.symbol,
         );
+        const nextStatus = this.ledgerStatusFromBroker(brokerOrder.status);
         await this.prisma.brokerOrderLedger.update({
           where: { id: ledgerOrder.id },
           data: {
             brokerOrderId: brokerOrder.id,
-            status: 'submitted',
+            status: nextStatus,
             brokerStatus: brokerOrder.status,
             responsePayload: brokerOrder as unknown as Prisma.InputJsonValue,
             submittedAt: ledgerOrder.submittedAt ?? new Date(),
@@ -71,13 +86,24 @@ export class BrokerOrderService {
         });
         updated += 1;
       } catch (error) {
+        if (
+          ledgerOrder.status === 'failed' &&
+          !ledgerOrder.brokerOrderId &&
+          this.isBrokerNotFound(error)
+        ) {
+          await this.prisma.brokerOrderLedger
+            .delete({ where: { id: ledgerOrder.id } })
+            .catch(() => undefined);
+          cleaned += 1;
+          continue;
+        }
         errors.push({
           clientOrderId: ledgerOrder.clientOrderId,
           message: this.errorMessage(error),
         });
       }
     }
-    return { checked: ledgerOrders.length, updated, errors };
+    return { checked: ledgerOrders.length, updated, cleaned, errors };
   }
 
   async submit(
@@ -88,6 +114,15 @@ export class BrokerOrderService {
   ): Promise<BrokerOrder> {
     this.assertModeAllowed(credentials.mode, context);
     const adapter = this.registry.get(credentials.broker);
+
+    const existing = await this.prisma.brokerOrderLedger.findUnique({
+      where: {
+        userId_clientOrderId: { userId, clientOrderId: order.clientOrderId },
+      },
+    });
+    if (existing) {
+      return this.resolveDuplicate(existing);
+    }
 
     try {
       await this.prisma.brokerOrderLedger.create({
@@ -108,7 +143,13 @@ export class BrokerOrderService {
       });
     } catch (error) {
       if (!this.isUniqueConstraintError(error)) throw error;
-      return this.resolveDuplicate(userId, order.clientOrderId);
+      return this.resolveDuplicate(
+        await this.prisma.brokerOrderLedger.findUniqueOrThrow({
+          where: {
+            userId_clientOrderId: { userId, clientOrderId: order.clientOrderId },
+          },
+        }),
+      );
     }
 
     try {
@@ -117,8 +158,6 @@ export class BrokerOrderService {
       await this.riskGuard.assertCanTrade(userId, {
         includesPendingReservation: true,
       });
-      // Broker-aware checks (per-trade risk, exposure cap, broker PnL);
-      // degrades to a no-op when the broker account is unreachable.
       await this.riskGuard.assertBrokerOrderAllowed(userId, credentials, order);
       const brokerOrder = await adapter.placeOrder(credentials, {
         ...order,
@@ -140,19 +179,71 @@ export class BrokerOrderService {
       brokerOrdersSubmittedTotal.inc({ mode: credentials.mode });
       return brokerOrder;
     } catch (error) {
-      await this.prisma.brokerOrderLedger
-        .update({
-          where: {
-            userId_clientOrderId: { userId, clientOrderId: order.clientOrderId },
-          },
-          data: {
-            status: 'failed',
-            failureReason: this.errorMessage(error).slice(0, 1000),
-          },
-        })
-        .catch(() => undefined);
+      const ledgerKey = {
+        userId_clientOrderId: { userId, clientOrderId: order.clientOrderId },
+      };
+      if (this.isExpectedRejection(error)) {
+        // Risk gates and other expected 4xx rejections should not pollute the
+        // ledger as permanent "failed" orders (auto-trade runs every minute).
+        await this.prisma.brokerOrderLedger
+          .delete({ where: ledgerKey })
+          .catch(() => undefined);
+      } else {
+        await this.prisma.brokerOrderLedger
+          .update({
+            where: ledgerKey,
+            data: {
+              status: 'failed',
+              failureReason: this.errorMessage(error).slice(0, 1000),
+            },
+          })
+          .catch(() => undefined);
+      }
       throw error;
     }
+  }
+
+  private ledgerStatusFromBroker(
+    brokerStatus: string,
+  ): 'submitted' | 'canceled' | 'failed' {
+    const normalized = brokerStatus.toLowerCase();
+    if (
+      normalized.includes('cancel') ||
+      normalized.includes('expire') ||
+      normalized === 'rejected'
+    ) {
+      return 'canceled';
+    }
+    if (normalized.includes('fail') || normalized.includes('reject')) {
+      return 'failed';
+    }
+    return 'submitted';
+  }
+
+  private isExpectedRejection(error: unknown): boolean {
+    return error instanceof HttpException && error.getStatus() < 500;
+  }
+
+  private isExpectedFailureReason(reason: string | null): boolean {
+    if (!reason) return false;
+    const needles = [
+      'Daily trade limit',
+      'Kill switch',
+      'Per-trade risk',
+      'Total exposure',
+      'Daily loss limit',
+      'Daily broker loss',
+      'Live broker order submission is disabled',
+      'Full-auto live trading is disabled',
+      'already being submitted',
+      'failed order; use a new id',
+    ];
+    return needles.some((needle) => reason.includes(needle));
+  }
+
+  private isBrokerNotFound(error: unknown): boolean {
+    const message = this.errorMessage(error).toLowerCase();
+    return message.includes('404') || message.includes('not found');
   }
 
   private assertModeAllowed(
@@ -175,12 +266,11 @@ export class BrokerOrderService {
   }
 
   private async resolveDuplicate(
-    userId: string,
-    clientOrderId: string,
+    existing: {
+      status: string;
+      responsePayload: Prisma.JsonValue | null;
+    },
   ): Promise<BrokerOrder> {
-    const existing = await this.prisma.brokerOrderLedger.findUniqueOrThrow({
-      where: { userId_clientOrderId: { userId, clientOrderId } },
-    });
     if (existing.status === 'submitted' && existing.responsePayload) {
       return existing.responsePayload as unknown as BrokerOrder;
     }
