@@ -1,26 +1,32 @@
-# Render Blueprint — API + ML + Backtest
-# Open: https://dashboard.render.com/blueprints
-# Connect repo: umuttanhediyeler/trading-platform
+# Render Blueprint — native runtimes (more reliable on Free than heavy Docker builds)
+# https://dashboard.render.com/blueprints
 #
-# Before/during first deploy, set shared env:
-#   DATABASE_URL  → Supabase or Neon (add ?sslmode=require)
-#   REDIS_URL     → Upstash
-#   WEB_ORIGIN    → https://trading-platform-umuts-projects-225a171a.vercel.app
-# After services are live, set on API:
-#   ML_SERVICE_URL=https://apex-scan-ml.onrender.com
-#   BACKTEST_SERVICE_URL=https://apex-scan-backtest.onrender.com
+# After create, set on each service (or paste from Desktop/render-api-env.txt):
+#   DATABASE_URL, REDIS_URL, WEB_ORIGIN, JWT_*, ENCRYPTION_KEY (64 hex chars)
 
 services:
   - type: web
     name: apex-scan-api
-    runtime: docker
+    runtime: node
     plan: free
-    dockerfilePath: ./apps/api/Dockerfile
-    dockerContext: .
+    rootDir: .
+    buildCommand: |
+      corepack enable && corepack prepare pnpm@9.15.0 --activate &&
+      pnpm install --frozen-lockfile --filter @trading-platform/api... &&
+      pnpm --filter @trading-platform/shared-types build &&
+      pnpm --filter @trading-platform/data build &&
+      pnpm --filter @trading-platform/api exec prisma generate &&
+      pnpm --filter @trading-platform/api build
+    startCommand: |
+      cd apps/api &&
+      node ../../node_modules/prisma/build/index.js migrate deploy &&
+      node dist/main.js
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=384
       - key: DATABASE_URL
         sync: false
       - key: REDIS_URL
@@ -36,7 +42,7 @@ services:
       - key: JWT_REFRESH_SECRET
         generateValue: true
       - key: ENCRYPTION_KEY
-        generateValue: true
+        sync: false
       - key: ALPACA_API_KEY
         sync: false
       - key: ALPACA_SECRET_KEY
@@ -50,19 +56,26 @@ services:
 
   - type: web
     name: apex-scan-ml
-    runtime: docker
+    runtime: python
     plan: free
-    dockerfilePath: ./Dockerfile
-    dockerContext: ./packages/ml
+    rootDir: packages/ml
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
         sync: false
+      - key: PYTHONUNBUFFERED
+        value: "1"
 
   - type: web
     name: apex-scan-backtest
-    runtime: docker
+    runtime: python
     plan: free
-    dockerfilePath: ./Dockerfile
-    dockerContext: ./packages/backtest
+    rootDir: packages/backtest
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
