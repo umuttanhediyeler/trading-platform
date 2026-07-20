@@ -26,7 +26,10 @@ RUN pnpm --filter @trading-platform/shared-types build \
  && pnpm --filter @trading-platform/api build \
  && pnpm --filter @trading-platform/api deploy --prod /deploy \
  && cp -R apps/api/prisma /deploy/prisma \
- && cp -R apps/api/dist /deploy/dist
+ && cp -R apps/api/dist /deploy/dist \
+ && printf 'node-linker=hoisted\n' > /deploy/.npmrc \
+ && cd /deploy && pnpm install --prod --no-frozen-lockfile
+
 
 FROM node:20-alpine AS runner
 WORKDIR /app
