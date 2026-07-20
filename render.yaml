@@ -12,20 +12,18 @@ services:
     rootDir: .
     buildCommand: |
       corepack enable && corepack prepare pnpm@9.15.0 --activate &&
+      export NODE_OPTIONS=--max-old-space-size=460 &&
+      export PNPM_NETWORK_CONCURRENCY=1 &&
       NODE_ENV=development pnpm install --no-frozen-lockfile --filter @trading-platform/api... &&
       pnpm --filter @trading-platform/shared-types build &&
       pnpm --filter @trading-platform/data build &&
       pnpm --filter @trading-platform/api exec prisma generate &&
       pnpm --filter @trading-platform/api build
-    # Schema is already applied on Supabase; migrate on boot is optional.
-    # Prisma CLI path is unreliable under pnpm on Render Free — start the API directly.
     startCommand: node apps/api/dist/main.js
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
-      - key: NODE_OPTIONS
-        value: --max-old-space-size=384
       - key: DATABASE_URL
         sync: false
       - key: REDIS_URL
