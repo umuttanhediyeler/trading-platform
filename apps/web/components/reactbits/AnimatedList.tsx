@@ -34,19 +34,20 @@ export function AnimatedList({
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
+    const node: HTMLDivElement = el;
 
     function update() {
-      const overflow = el.scrollHeight > el.clientHeight + 4;
+      const overflow = node.scrollHeight > node.clientHeight + 4;
       setCanScroll(overflow);
-      setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 8);
+      setAtBottom(node.scrollHeight - node.scrollTop - node.clientHeight < 8);
     }
 
     update();
-    el.addEventListener("scroll", update, { passive: true });
+    node.addEventListener("scroll", update, { passive: true });
     const ro = new ResizeObserver(update);
-    ro.observe(el);
+    ro.observe(node);
     return () => {
-      el.removeEventListener("scroll", update);
+      node.removeEventListener("scroll", update);
       ro.disconnect();
     };
   }, [children, maxHeight]);
