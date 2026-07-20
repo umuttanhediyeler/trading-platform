@@ -1,26 +1,20 @@
-# Render Blueprint
-# API needs Starter ($7): Nest monorepo build OOMs on Free 512MB.
-# ML/Backtest can stay Free (may sleep when idle).
+# Render Free — deploy prebuilt images from GHCR (no on-platform compile).
+# Images are built by .github/workflows/publish-images.yml (free GitHub Actions).
 #
-# Env (from Desktop/render-api-env.txt):
-#   DATABASE_URL, REDIS_URL, WEB_ORIGIN, JWT_*, ENCRYPTION_KEY (64 hex)
+# One-time: make GHCR packages public (Packages → package → Package settings → Change visibility)
+#   - trading-platform-api
+#   - trading-platform-ml
+#   - trading-platform-backtest
+#
+# Env: paste from Desktop/render-api-env.txt (DATABASE_URL, REDIS_URL, WEB_ORIGIN, ENCRYPTION_KEY, …)
 
 services:
   - type: web
     name: apex-scan-api
-    runtime: node
-    plan: starter
-    rootDir: .
-    buildCommand: |
-      corepack enable && corepack prepare pnpm@9.15.0 --activate &&
-      export NODE_OPTIONS=--max-old-space-size=768 &&
-      export PNPM_NETWORK_CONCURRENCY=1 &&
-      NODE_ENV=development pnpm install --no-frozen-lockfile --filter @trading-platform/api... &&
-      pnpm --filter @trading-platform/shared-types build &&
-      pnpm --filter @trading-platform/data build &&
-      pnpm --filter @trading-platform/api exec prisma generate &&
-      pnpm --filter @trading-platform/api build
-    startCommand: node apps/api/dist/main.js
+    runtime: image
+    plan: free
+    image:
+      url: ghcr.io/umuttanhediyeler/trading-platform-api:latest
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
@@ -54,11 +48,10 @@ services:
 
   - type: web
     name: apex-scan-ml
-    runtime: python
+    runtime: image
     plan: free
-    rootDir: packages/ml
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    image:
+      url: ghcr.io/umuttanhediyeler/trading-platform-ml:latest
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
@@ -68,11 +61,10 @@ services:
 
   - type: web
     name: apex-scan-backtest
-    runtime: python
+    runtime: image
     plan: free
-    rootDir: packages/backtest
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    image:
+      url: ghcr.io/umuttanhediyeler/trading-platform-backtest:latest
     healthCheckPath: /health
     envVars:
       - key: PYTHONUNBUFFERED
