@@ -13,6 +13,8 @@ import {
 import { SpotlightCard } from "@/components/reactbits/SpotlightCard";
 import { CountUp } from "@/components/reactbits/CountUp";
 import { FadeIn } from "@/components/reactbits/FadeIn";
+import { AnimatedList } from "@/components/reactbits/AnimatedList";
+import { SymbolWithLogo } from "@/components/shared/StockLogo";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -544,72 +546,78 @@ export default function SimulationPage() {
                 }}
               />
             ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Sembol</TableHead>
-                    <TableHead>Yön</TableHead>
-                    <TableHead>Adet</TableHead>
-                    <TableHead>Giriş</TableHead>
-                    <TableHead>Marka</TableHead>
-                    <TableHead>K/Z</TableHead>
-                    <TableHead>Kaynak</TableHead>
-                    <TableHead className="text-right">İşlem</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {account.openPositions.map((p) => (
-                    <TableRow key={p.id}>
-                      <TableCell className="font-mono">{p.symbol}</TableCell>
-                      <TableCell>{sideLabel(p.side)}</TableCell>
-                      <TableCell className="font-mono">{p.quantity}</TableCell>
-                      <TableCell className="font-mono">{formatNumber(p.entryPrice)}</TableCell>
-                      <TableCell className="font-mono">{formatNumber(p.currentPrice)}</TableCell>
-                      <TableCell
-                        className={cn(
-                          "font-mono",
-                          p.pnl >= 0 ? "text-success" : "text-destructive",
-                        )}
-                      >
-                        {formatCurrency(p.pnl)}
-                      </TableCell>
-                      <TableCell>
-                        <SourceBadge source={p.source} />
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {confirmCloseId === p.id ? (
-                          <div className="inline-flex items-center gap-1.5">
-                            <Button
-                              size="sm"
-                              variant="destructive"
-                              disabled={closingId === p.id}
-                              onClick={() => void closePosition(p)}
-                            >
-                              {closingId === p.id ? "…" : "Onayla"}
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              disabled={closingId === p.id}
-                              onClick={() => setConfirmCloseId(null)}
-                            >
-                              Vazgeç
-                            </Button>
-                          </div>
-                        ) : (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => setConfirmCloseId(p.id)}
+              <AnimatedList maxVisible={12} itemHeight={52}>
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Sembol</TableHead>
+                        <TableHead>Yön</TableHead>
+                        <TableHead>Adet</TableHead>
+                        <TableHead>Giriş</TableHead>
+                        <TableHead>Marka</TableHead>
+                        <TableHead>K/Z</TableHead>
+                        <TableHead>Kaynak</TableHead>
+                        <TableHead className="text-right">İşlem</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {account.openPositions.map((p) => (
+                        <TableRow key={p.id}>
+                          <TableCell>
+                            <SymbolWithLogo symbol={p.symbol} size="sm" />
+                          </TableCell>
+                          <TableCell>{sideLabel(p.side)}</TableCell>
+                          <TableCell className="font-mono">{p.quantity}</TableCell>
+                          <TableCell className="font-mono">{formatNumber(p.entryPrice)}</TableCell>
+                          <TableCell className="font-mono">{formatNumber(p.currentPrice)}</TableCell>
+                          <TableCell
+                            className={cn(
+                              "font-mono",
+                              p.pnl >= 0 ? "text-success" : "text-destructive",
+                            )}
                           >
-                            Kapat
-                          </Button>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                            {formatCurrency(p.pnl)}
+                          </TableCell>
+                          <TableCell>
+                            <SourceBadge source={p.source} />
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {confirmCloseId === p.id ? (
+                              <div className="inline-flex items-center gap-1.5">
+                                <Button
+                                  size="sm"
+                                  variant="destructive"
+                                  disabled={closingId === p.id}
+                                  onClick={() => void closePosition(p)}
+                                >
+                                  {closingId === p.id ? "…" : "Onayla"}
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={closingId === p.id}
+                                  onClick={() => setConfirmCloseId(null)}
+                                >
+                                  Vazgeç
+                                </Button>
+                              </div>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => setConfirmCloseId(p.id)}
+                              >
+                                Kapat
+                              </Button>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </AnimatedList>
             )}
           </CardContent>
         </SpotlightCard>
@@ -628,41 +636,47 @@ export default function SimulationPage() {
                 description="Pozisyon kapattığınızda veya stop/hedef tetiklendiğinde burada listelenir."
               />
             ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Sembol</TableHead>
-                    <TableHead>Yön</TableHead>
-                    <TableHead>Adet</TableHead>
-                    <TableHead>Giriş</TableHead>
-                    <TableHead>Çıkış</TableHead>
-                    <TableHead>K/Z</TableHead>
-                    <TableHead>Kaynak</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {account.closedTrades.map((p) => (
-                    <TableRow key={p.id}>
-                      <TableCell className="font-mono">{p.symbol}</TableCell>
-                      <TableCell>{sideLabel(p.side)}</TableCell>
-                      <TableCell className="font-mono">{p.quantity}</TableCell>
-                      <TableCell className="font-mono">{formatNumber(p.entryPrice)}</TableCell>
-                      <TableCell className="font-mono">{formatNumber(p.currentPrice)}</TableCell>
-                      <TableCell
-                        className={cn(
-                          "font-mono",
-                          p.pnl >= 0 ? "text-success" : "text-destructive",
-                        )}
-                      >
-                        {formatCurrency(p.pnl)}
-                      </TableCell>
-                      <TableCell>
-                        <SourceBadge source={p.source} />
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+              <AnimatedList maxVisible={12} itemHeight={52}>
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Sembol</TableHead>
+                        <TableHead>Yön</TableHead>
+                        <TableHead>Adet</TableHead>
+                        <TableHead>Giriş</TableHead>
+                        <TableHead>Çıkış</TableHead>
+                        <TableHead>K/Z</TableHead>
+                        <TableHead>Kaynak</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {account.closedTrades.map((p) => (
+                        <TableRow key={p.id}>
+                          <TableCell>
+                            <SymbolWithLogo symbol={p.symbol} size="sm" />
+                          </TableCell>
+                          <TableCell>{sideLabel(p.side)}</TableCell>
+                          <TableCell className="font-mono">{p.quantity}</TableCell>
+                          <TableCell className="font-mono">{formatNumber(p.entryPrice)}</TableCell>
+                          <TableCell className="font-mono">{formatNumber(p.currentPrice)}</TableCell>
+                          <TableCell
+                            className={cn(
+                              "font-mono",
+                              p.pnl >= 0 ? "text-success" : "text-destructive",
+                            )}
+                          >
+                            {formatCurrency(p.pnl)}
+                          </TableCell>
+                          <TableCell>
+                            <SourceBadge source={p.source} />
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </AnimatedList>
             )}
             <p className="mt-3 text-xs text-muted-foreground">
               İpucu:{" "}

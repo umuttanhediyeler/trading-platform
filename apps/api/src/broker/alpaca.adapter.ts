@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -12,6 +13,17 @@ import {
 
 const PAPER_URL = 'https://paper-api.alpaca.markets';
 const LIVE_URL = 'https://api.alpaca.markets';
+
+/** Alpaca equity min tick: $0.01 at/above $1, else $0.0001. */
+export function formatAlpacaPrice(price: number): string {
+  if (!Number.isFinite(price) || price <= 0) {
+    throw new BadRequestException(`Invalid order price: ${price}`);
+  }
+  const increment = price >= 1 ? 0.01 : 0.0001;
+  const rounded = Math.round(price / increment) * increment;
+  const decimals = price >= 1 ? 2 : 4;
+  return rounded.toFixed(decimals);
+}
 
 @Injectable()
 export class AlpacaAdapter implements BrokerAdapter {
@@ -36,7 +48,9 @@ export class AlpacaAdapter implements BrokerAdapter {
       side: order.side,
       type: order.type,
       time_in_force: 'day',
-      limit_price: order.limitPrice ? String(order.limitPrice) : undefined,
+      limit_price: order.limitPrice
+        ? formatAlpacaPrice(order.limitPrice)
+        : undefined,
       client_order_id: order.clientOrderId,
     };
     if (order.orderClass === 'bracket') {
@@ -46,8 +60,10 @@ export class AlpacaAdapter implements BrokerAdapter {
         );
       }
       body.order_class = 'bracket';
-      body.take_profit = { limit_price: String(order.takeProfitPrice) };
-      body.stop_loss = { stop_price: String(order.stopLossPrice) };
+      body.take_profit = {
+        limit_price: formatAlpacaPrice(order.takeProfitPrice),
+      };
+      body.stop_loss = { stop_price: formatAlpacaPrice(order.stopLossPrice) };
     }
     const data = await this.request(creds, 'POST', '/v2/orders', body);
     return this.mapOrder(data);
@@ -127,9 +143,12 @@ export class AlpacaAdapter implements BrokerAdapter {
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      throw new ServiceUnavailableException(
-        `Alpaca ${method} ${path} failed: ${res.status} ${text}`,
-      );
+      const message = `Alpaca ${method} ${path} failed: ${res.status} ${text}`;
+      // Validation rejections (bad price/qty) should not leave permanent failed rows.
+      if (res.status === 400 || res.status === 422) {
+        throw new BadRequestException(message);
+      }
+      throw new ServiceUnavailableException(message);
     }
     if (res.status === 204) return undefined;
     return res.json();

@@ -211,7 +211,7 @@ describe('MlBridgeService shadow evaluation resolution', () => {
       { openOrder: jest.fn() } as never,
       { getHistoricalBars: jest.fn() } as never,
     );
-    jest.spyOn(service, 'loadBars').mockResolvedValue(barsForSymbol);
+    jest.spyOn(service, 'loadBarsForResolve').mockResolvedValue(barsForSymbol);
     return { service, prisma, gateway };
   }
 
@@ -294,5 +294,40 @@ describe('MlBridgeService shadow evaluation resolution', () => {
         data: expect.objectContaining({ actualLabel: 'timeout' }),
       }),
     );
+  });
+
+  it('does not mark hit_target from bars that only exist before generatedAt', async () => {
+    const generatedAt = new Date(Date.now() - 30 * 60 * 1000);
+    const preSignalBars: MlBar[] = Array.from({ length: 5 }, (_, index) => ({
+      timestamp: new Date(
+        generatedAt.getTime() - (5 - index) * 60_000,
+      ).toISOString(),
+      open: 100,
+      high: 250, // would falsely hit any realistic target if used
+      low: 99,
+      close: 101,
+      volume: 1000,
+    }));
+    const { service, prisma } = makeResolver(
+      [
+        {
+          id: 'eval-3',
+          symbol: 'IBM',
+          modelVersion: 'shadow-1',
+          entryPrice: 210,
+          stopPrice: 208,
+          targetPrice: 214,
+          generatedAt,
+          predictionId: 'prediction-11',
+          status: 'open',
+        },
+      ],
+      preSignalBars,
+    );
+
+    const result = await service.resolveShadowEvaluations();
+
+    expect(result).toEqual({ resolved: 0 });
+    expect(prisma.shadowEvaluation.update).not.toHaveBeenCalled();
   });
 });

@@ -36,5 +36,7 @@ COPY --from=builder /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=builder /app/packages/data ./packages/data
 COPY --from=builder /app/packages/shared-types ./packages/shared-types
 USER nestjs
+# Koyeb/Render inject PORT; Nest reads process.env.PORT (default 3001).
+ENV PORT=3001
 EXPOSE 3001
 CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main.js"]

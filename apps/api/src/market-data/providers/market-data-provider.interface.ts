@@ -15,6 +15,22 @@ export interface Bar {
   volume: number;
 }
 
+/** Session + 52-week style stats for dashboard / detail panels. */
+export interface StockStats {
+  symbol: string;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  previousClose: number | null;
+  week52High: number | null;
+  week52Low: number | null;
+  avgVolume: number | null;
+  marketCap: number | null;
+  peRatio: number | null;
+  priceToBook: number | null;
+  asOf: string;
+}
+
 export type Timeframe = '1min' | '5min' | '15min' | '1h' | '1d';
 
 /**
@@ -43,6 +59,11 @@ export interface MarketDataProvider {
     from: Date,
     to: Date,
   ): Promise<Map<string, Bar[]>>;
+  /** Optional vendor snapshot (daily + previous close). */
+  getSnapshot?(symbol: string): Promise<{
+    daily: Bar | null;
+    previousDaily: Bar | null;
+  }>;
   subscribeRealtime(
     symbols: string[],
     onQuote: (quote: Quote) => void,

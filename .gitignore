@@ -42,10 +42,6 @@ out/
 *.pem
 *.key
 certs/
-# Rendered nginx TLS server config (produced by infra/init-letsencrypt.sh from
-# the committed *.template). Domain-specific, regenerated per host.
-infra/nginx/tls/app.conf
-
 # ---------------------------------------------------------------------------
 # Logs & caches
 # ---------------------------------------------------------------------------

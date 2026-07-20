@@ -201,8 +201,9 @@ export default function SignalsPage() {
                 Sonuç
               </p>
               <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                Fiyat hedefe ulaşırsa “Hedefe ulaştı”, stopa değerse “Stop oldu”;
-                48 saat içinde ikisi de olmazsa “Süresi doldu” olarak kapanır.
+                Sinyal üretildikten sonraki gerçek bar verisinde (önce 5 dk, yoksa günlük)
+                high hedefe veya low stopa değerse sonuç yazılır. Eski mumlar
+                kullanılmaz; 48 saat içinde ikisi de olmazsa “Süresi doldu” olur.
               </p>
             </div>
           </div>
@@ -219,8 +220,8 @@ export default function SignalsPage() {
               }
             />
           ) : null}
-          <AnimatedList maxVisible={9} itemHeight={180}>
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <AnimatedList maxHeight={640} fade>
+            <div className="grid gap-3 pb-6 md:grid-cols-2 xl:grid-cols-3">
               {signals.map((s) => (
                 <SignalCard
                   key={s.id}

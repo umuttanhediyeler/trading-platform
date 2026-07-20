@@ -298,6 +298,9 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
    * Walk bars after generation and classify the barrier outcome. OHLC data
    * does not reveal intrabar ordering; if both barriers are touched in one
    * candle the conservative stop-first outcome is used.
+   *
+   * Never evaluates bars before `generatedAt` — that produced false
+   * hit_target/hit_stop results from older highs/lows.
    */
   private classifyOutcome(
     generatedAt: Date,
@@ -310,16 +313,93 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
     const after = bars.filter(
       (bar) => new Date(bar.timestamp).getTime() >= generatedAt.getTime(),
     );
-    const path = after.length > 0 ? after : bars.slice(-5);
     if (generatedAt.getTime() < cutoffMs) {
-      return { status: 'expired', resolvedPrice: path.at(-1)?.close ?? entry };
+      return {
+        status: 'expired',
+        resolvedPrice: after.at(-1)?.close ?? entry,
+      };
     }
-    for (const bar of path) {
+    // Wait for post-signal bars; do not invent a path from pre-signal history.
+    if (after.length === 0) return null;
+    for (const bar of after) {
       if (bar.low <= stop) return { status: 'hit_stop', resolvedPrice: stop };
       if (bar.high >= target)
         return { status: 'hit_target', resolvedPrice: target };
     }
     return null;
+  }
+
+  /**
+   * Bars used for barrier resolution: prefer live provider 5-min bars after
+   * `generatedAt`, then daily, then local DB — always filtered to ≥ generatedAt.
+   */
+  async loadBarsForResolve(
+    symbol: string,
+    generatedAt: Date,
+  ): Promise<MlBar[]> {
+    const to = new Date(Date.now() - 16 * 60_000);
+    const from = new Date(generatedAt.getTime() - 60_000);
+    if (to.getTime() <= from.getTime()) return [];
+
+    const toMl = (bars: Array<{
+      timestamp: Date | string;
+      open: number;
+      high: number;
+      low: number;
+      close: number;
+      volume: number;
+    }>): MlBar[] =>
+      bars
+        .map((bar) => ({
+          timestamp:
+            bar.timestamp instanceof Date
+              ? bar.timestamp.toISOString()
+              : new Date(bar.timestamp).toISOString(),
+          open: Number(bar.open),
+          high: Number(bar.high),
+          low: Number(bar.low),
+          close: Number(bar.close),
+          volume: Number(bar.volume),
+        }))
+        .filter(
+          (bar) =>
+            new Date(bar.timestamp).getTime() >= generatedAt.getTime(),
+        );
+
+    try {
+      const fiveMin = await this.marketData.getHistoricalBars(
+        symbol,
+        '5min',
+        from,
+        to,
+      );
+      const path = toMl(fiveMin);
+      if (path.length > 0) return path;
+    } catch (error) {
+      this.logger.warn(
+        `Resolve 5min bars failed for ${symbol}: ${(error as Error).message}`,
+      );
+    }
+
+    try {
+      const daily = await this.marketData.getHistoricalBars(
+        symbol,
+        '1d',
+        from,
+        to,
+      );
+      const path = toMl(daily);
+      if (path.length > 0) return path;
+    } catch (error) {
+      this.logger.warn(
+        `Resolve daily bars failed for ${symbol}: ${(error as Error).message}`,
+      );
+    }
+
+    const stored = await this.loadBars(symbol, 60);
+    return stored.filter(
+      (bar) => new Date(bar.timestamp).getTime() >= generatedAt.getTime(),
+    );
   }
 
   /** Mark open signals hit_target / hit_stop / expired from latest bars. */
@@ -334,7 +414,10 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
 
     for (const signal of open) {
       try {
-        const bars = await this.loadBars(signal.symbol, 40);
+        const bars = await this.loadBarsForResolve(
+          signal.symbol,
+          signal.generatedAt,
+        );
         if (bars.length === 0 && signal.generatedAt.getTime() >= cutoff) continue;
         const outcome = this.classifyOutcome(
           signal.generatedAt,
@@ -419,10 +502,14 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
 
     for (const evaluation of open) {
       try {
-        let bars = barsCache.get(evaluation.symbol);
+        const cacheKey = `${evaluation.symbol}:${evaluation.generatedAt.getTime()}`;
+        let bars = barsCache.get(cacheKey);
         if (!bars) {
-          bars = await this.loadBars(evaluation.symbol, 40);
-          barsCache.set(evaluation.symbol, bars);
+          bars = await this.loadBarsForResolve(
+            evaluation.symbol,
+            evaluation.generatedAt,
+          );
+          barsCache.set(cacheKey, bars);
         }
         if (bars.length === 0 && evaluation.generatedAt.getTime() >= cutoff) {
           continue;

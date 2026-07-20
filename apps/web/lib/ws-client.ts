@@ -18,7 +18,10 @@ type Handler<E extends EventName> = (payload: WsEvents[E]) => void;
 let socket: Socket | null = null;
 
 function getWsUrl() {
+  // Prefer an explicit WS URL, then the same origin as the REST API
+  // (required on Vercel where the frontend origin has no Socket.IO).
   if (process.env.NEXT_PUBLIC_WS_URL) return process.env.NEXT_PUBLIC_WS_URL;
+  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
   if (typeof window !== "undefined") return window.location.origin;
   return "http://localhost:3001";
 }

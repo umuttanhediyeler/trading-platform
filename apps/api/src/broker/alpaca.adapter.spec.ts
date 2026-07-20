@@ -1,4 +1,4 @@
-import { AlpacaAdapter } from './alpaca.adapter';
+import { AlpacaAdapter, formatAlpacaPrice } from './alpaca.adapter';
 import { BrokerCredentials } from './broker-adapter.interface';
 
 describe('AlpacaAdapter', () => {
@@ -31,6 +31,23 @@ describe('AlpacaAdapter', () => {
       json: async () => orderResponse,
     });
     global.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  it('rounds bracket prices to Alpaca tick size', async () => {
+    await adapter.placeOrder(credentials, {
+      symbol: 'MSFT',
+      side: 'buy',
+      quantity: 1,
+      type: 'market',
+      clientOrderId: 'round-test',
+      orderClass: 'bracket',
+      takeProfitPrice: 334.5753,
+      stopLossPrice: 318.1234,
+    });
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.take_profit).toEqual({ limit_price: '334.58' });
+    expect(body.stop_loss).toEqual({ stop_price: '318.12' });
   });
 
   it('submits a bracket order with take-profit and stop-loss legs', async () => {
@@ -95,5 +112,16 @@ describe('AlpacaAdapter', () => {
     expect(body.order_class).toBeUndefined();
     expect(body.take_profit).toBeUndefined();
     expect(body.stop_loss).toBeUndefined();
+  });
+});
+
+describe('formatAlpacaPrice', () => {
+  it('rounds to penny for prices at or above $1', () => {
+    expect(formatAlpacaPrice(334.5753)).toBe('334.58');
+    expect(formatAlpacaPrice(110)).toBe('110.00');
+  });
+
+  it('rounds to 4 decimals for sub-dollar prices', () => {
+    expect(formatAlpacaPrice(0.12345)).toBe('0.1235');
   });
 });

@@ -194,6 +194,21 @@ export interface BacktestRun {
   completedAt: string | null;
 }
 
+export interface StockStats {
+  symbol: string;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  previousClose: number | null;
+  week52High: number | null;
+  week52Low: number | null;
+  avgVolume: number | null;
+  marketCap: number | null;
+  peRatio: number | null;
+  priceToBook: number | null;
+  asOf: string;
+}
+
 export interface PlanFeatureRow {
   feature: string;
   free: string | boolean;

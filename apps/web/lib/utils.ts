@@ -24,3 +24,10 @@ export function formatNumber(value: number, digits = 2) {
     minimumFractionDigits: digits,
   }).format(value);
 }
+
+export function formatCompact(value: number, digits = 2) {
+  return new Intl.NumberFormat("en-US", {
+    notation: "compact",
+    maximumFractionDigits: digits,
+  }).format(value);
+}

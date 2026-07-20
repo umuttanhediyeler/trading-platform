@@ -36,44 +36,28 @@ shared TypeScript contracts.
 ## Architecture
 
 ```
-                             ┌──────────────────────────────┐
-                             │        Browser (user)        │
-                             └───────────────┬──────────────┘
-                                             │ HTTPS / WSS
-                                   ┌──────────▼──────────┐
-                                   │   nginx (prod)      │
-                                   │  reverse proxy/TLS  │
-                                   └──────┬───────┬──────┘
-                              /           │       │  /api  /ws
-                              ▼           │       ▼
-                     ┌─────────────────┐  │  ┌──────────────────────────┐
-                     │   apps/web      │  │  │        apps/api          │
-                     │  Next.js 14     │──┼─▶│   NestJS (REST + WS)     │
-                     │  (App Router)   │  │  │  auth · billing · scanner│
-                     └─────────────────┘  │  │  signals · execution ... │
-                              ▲            │  └───┬───────┬──────┬───────┘
-                              │  fetch/WS  │      │ SQL   │ HTTP │ Redis
-                              └────────────┘      │       │      │ (BullMQ,
-                                                  │       │      │  pub/sub)
-                    ┌─────────────────────────────▼──┐    │   ┌──▼───────┐
-                    │   Postgres + TimescaleDB        │    │   │  Redis   │
-                    │   (users, subs, signals, bars…) │    │   └──────────┘
-                    └───▲──────────────────────▲──────┘    │
-                        │ SQL (read/write       │ SQL       │ HTTP
-                        │  model_registry)      │ (bars)    │
-              ┌─────────┴────────┐   ┌──────────┴─────────┐ │
-              │  packages/ml     │   │ packages/backtest  │◀┘
-              │  FastAPI :8001   │   │  FastAPI :8002     │
-              │  /predict /train │   │  /backtest/run     │
-              │  /nightly        │   │  vectorbt engine   │
-              └──────────────────┘   └────────────────────┘
-
-External APIs (called by apps/api only): Polygon.io · Stripe · Alpaca
+        Browser
+           │
+           ▼
+   ┌───────────────┐         ┌────────────────────────────────┐
+   │  apps/web     │  HTTPS  │  apps/api (NestJS)             │
+   │  Next.js      │────────▶│  REST + Socket.IO              │
+   │  (Vercel)     │  WSS    │  (Koyeb / Render)              │
+   └───────────────┘         └───┬──────────┬──────────┬──────┘
+                                 │          │          │
+                    DATABASE_URL │          │ HTTP     │ REDIS_URL
+                                 ▼          ▼          ▼
+                          Supabase/Neon   ML + BT    Upstash
+                          (Postgres)    (Koyeb)     (Redis)
 ```
 
 **Golden rule:** `apps/web` never talks to Postgres, Redis, or the Python
 services directly — it always goes through `apps/api`, so entitlement checks
 (e.g. Free users can't reach AI signals) are enforced in exactly one place.
+
+**Deploy targets:** Vercel (web) · Koyeb/Render (api, ml, backtest) ·
+Supabase/Neon (Postgres) · Upstash (Redis). Each backend service has its own
+`Dockerfile` and binds to the platform-injected `$PORT`.
 
 ---
 
@@ -87,7 +71,7 @@ services directly — it always goes through `apps/api`, so entitlement checks
 | `packages/data` | TypeScript | Shared market-data utilities: bar normalization, indicator math (RSI, VWAP, volume ratio, gap %), chunking, bounded concurrency and rate limiting for provider-safe bulk scans. Imported by api. |
 | `packages/ml` | Python, FastAPI, LightGBM | AI signal engine: feature engineering, triple-barrier labeling, walk-forward training, nightly strategy selection, model registry. Ships with **look-ahead bias tests**. |
 | `packages/backtest` | Python, FastAPI, vectorbt | Strategy backtesting: return curve, Sharpe, drawdown, expectancy, profit factor. |
-| `infra` | Docker Compose, nginx | Local dev datastores + full-stack compose profile; production reverse-proxy config. |
+| `infra` | Optional assets | `postgres/init.sql` (Timescale helper), Prometheus/Grafana configs — not required for PaaS deploy. |
 
 ### `packages/shared-types` layout
 
@@ -124,8 +108,9 @@ packages/shared-types/
 ### Prerequisites
 
 - **Node.js** ≥ 20 and **pnpm** 9 (`corepack enable && corepack prepare pnpm@9.15.0 --activate`)
-- **Docker** + Docker Compose
 - **Python** ≥ 3.11 (for `packages/ml` and `packages/backtest`)
+- **Postgres** (local install, Docker image, or a free Neon/Supabase project)
+- **Redis** (local install, Docker image, or a free Upstash database)
 
 ### 1. Install JS/TS dependencies
 
@@ -133,41 +118,36 @@ packages/shared-types/
 pnpm install
 ```
 
-### 2. Start the datastores (Postgres + Redis)
+### 2. Configure environment variables
 
 ```bash
-docker compose -f infra/docker-compose.yml up -d postgres redis
+cp apps/api/.env.example apps/api/.env
+cp apps/web/.env.example apps/web/.env.local
+cp packages/ml/.env.example packages/ml/.env
+cp packages/backtest/.env.example packages/backtest/.env
 ```
 
-Postgres comes up with the TimescaleDB extension and a `bars` hypertable
-already created (see `infra/postgres/init.sql`). Default dev connection:
-`postgresql://user:pass@localhost:5432/trading`.
+Point `DATABASE_URL` / `REDIS_URL` at your local or managed instances. See
+root `.env.example` for the full catalog.
 
-### 3. Configure environment variables
-
-Copy the root example and each app's example, then fill in the placeholders.
-See `.env.example` for the full list and `cursor_detailed_spec.md` §2 for where
-each variable is consumed.
-
-```bash
-cp .env.example .env
-# apps/api/.env, apps/web/.env.local, packages/ml/.env, packages/backtest/.env
-# are created per the respective app specs.
-```
-
-### 4. Build shared types
+### 3. Build shared types & migrate
 
 ```bash
 pnpm --filter @trading-platform/shared-types build
+cd apps/api && pnpm exec prisma migrate deploy && cd ../..
 ```
 
-### 5. Run everything (once apps exist)
+### 4. Run services (separate terminals)
 
 ```bash
-pnpm dev            # turborepo: runs web + api in dev
-# or the full containerized stack:
-docker compose -f infra/docker-compose.yml --profile full up --build
+pnpm --filter @trading-platform/api dev          # :3001
+pnpm --filter @trading-platform/web dev          # :3000
+# ML / backtest (from their package dirs), e.g.:
+#   uv run --env-file .env uvicorn app.main:app --port 8001
+#   uv run --env-file .env uvicorn app.main:app --port 8002
 ```
+
+Or `pnpm dev` from the repo root (Turbo runs web + api when those scripts exist).
 
 ### Useful monorepo scripts
 

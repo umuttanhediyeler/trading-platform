@@ -237,6 +237,9 @@ export class BrokerOrderService {
       'Full-auto live trading is disabled',
       'already being submitted',
       'failed order; use a new id',
+      'sub-penny increment',
+      'minimum pricing criteria',
+      '42210000',
     ];
     return needles.some((needle) => reason.includes(needle));
   }

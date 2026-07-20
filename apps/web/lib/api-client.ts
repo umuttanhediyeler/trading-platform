@@ -15,6 +15,7 @@ import type {
   SignalStatus,
   SignalSummary,
   SimulationAccount,
+  StockStats,
   Watchlist,
 } from "./types";
 
@@ -47,10 +48,9 @@ type RequestOptions = {
 };
 
 function getBaseUrl() {
-  // On the server (NextAuth callbacks, RSC data fetches) a relative URL like
-  // "/api" cannot be fetched — it needs an absolute origin. INTERNAL_API_URL
-  // points at the API service directly (e.g. http://api:3001 behind nginx).
-  // In the browser the baked NEXT_PUBLIC_API_URL (often "/api") is correct.
+  // Absolute API origin from env (e.g. http://localhost:3001 locally,
+  // https://<api>.koyeb.app in production). INTERNAL_API_URL is an optional
+  // server-only override for SSR/NextAuth when it must differ from the public URL.
   if (typeof window === "undefined") {
     return (
       process.env.INTERNAL_API_URL ??
@@ -517,6 +517,11 @@ export const apiClient = {
       stale: boolean;
       source: string;
     }>(`/market-data/quote/${encodeURIComponent(symbol)}`, { token }),
+
+  getStockStats: (token: string, symbol: string) =>
+    request<StockStats>(`/market-data/stats/${encodeURIComponent(symbol)}`, {
+      token,
+    }),
 
   getMarketSymbols: (token: string) =>
     request<MarketSymbol[]>("/market-data/symbols", { token }),

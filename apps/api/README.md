@@ -6,13 +6,12 @@ Redis (quote cache, BullMQ) + Socket.IO on the `/ws` namespace.
 ## Setup
 
 ```bash
-cp .env.example .env        # fill in secrets
-npm install
-npx prisma migrate dev      # requires Postgres from infra/docker-compose.yml
-npx prisma db seed          # seeds the Entitlement table for free/basic/premium
-npm run start:dev           # http://localhost:3001
+cp .env.example .env        # fill DATABASE_URL, REDIS_URL, secrets
+pnpm install                # from monorepo root preferred
+pnpm exec prisma migrate dev   # needs Postgres (local / Neon / Supabase)
+pnpm exec prisma db seed       # seeds Entitlement for free/basic/premium
+pnpm run start:dev             # http://localhost:3001
 ```
-
 Set `DISABLE_WORKERS=true` to boot without Redis (disables BullMQ workers).
 
 ## Modules

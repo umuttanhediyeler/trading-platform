@@ -6,10 +6,12 @@ import { FadeIn } from "./FadeIn";
 
 type AnimatedListProps = {
   children: ReactNode;
-  /** Approximate number of rows/cards visible before scrolling (~10–15). */
+  /** Approximate number of rows visible before scrolling (~10–15 for tables). */
   maxVisible?: number;
-  /** Tailwind height per item in px (row ~52, card ~120). */
+  /** Height per item in px (table row ~52, card row ~300). */
   itemHeight?: number;
+  /** Override computed max height (useful for card grids). */
+  maxHeight?: number;
   className?: string;
   innerClassName?: string;
   fade?: boolean;
@@ -19,6 +21,7 @@ export function AnimatedList({
   children,
   maxVisible = 12,
   itemHeight = 52,
+  maxHeight: maxHeightProp,
   className,
   innerClassName,
   fade = true,
@@ -26,7 +29,7 @@ export function AnimatedList({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [canScroll, setCanScroll] = useState(false);
   const [atBottom, setAtBottom] = useState(false);
-  const maxHeight = maxVisible * itemHeight;
+  const maxHeight = maxHeightProp ?? maxVisible * itemHeight;
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -63,11 +66,11 @@ export function AnimatedList({
       {fade && canScroll && !atBottom ? (
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-background via-background/80 to-transparent"
+          className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-background from-20% via-background/85 to-transparent"
         />
       ) : null}
       {canScroll && !atBottom ? (
-        <p className="pointer-events-none absolute inset-x-0 bottom-1 text-center text-[10px] uppercase tracking-[0.25em] text-muted-foreground/80">
+        <p className="pointer-events-none absolute inset-x-0 bottom-1.5 text-center text-[10px] uppercase tracking-[0.25em] text-muted-foreground">
           Kaydır ↓
         </p>
       ) : null}

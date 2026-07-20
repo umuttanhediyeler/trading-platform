@@ -15,6 +15,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   MARKET_DATA_PROVIDER,
   MarketDataProvider,
+  StockStats,
   Timeframe,
 } from './providers/market-data-provider.interface';
 import { MarketAssetsService } from './market-assets.service';
@@ -126,5 +127,75 @@ export class MarketDataController {
     }
     const quote = await this.provider.getQuote(upper);
     return { ...quote, stale: false, source: this.provider.name };
+  }
+
+  /**
+   * Session + 52-week style stats for the selected symbol on the dashboard.
+   * Built from Alpaca snapshot (when available) and 1y daily bars. Fundamental
+   * ratios (P/E, market cap, P/B) are null until a fundamentals feed is wired.
+   */
+  @Get('stats/:symbol')
+  async stats(@Param('symbol') symbol: string): Promise<StockStats> {
+    const upper = symbol.toUpperCase();
+    const to = new Date();
+    to.setMinutes(to.getMinutes() - 16);
+    const from = new Date(to.getTime() - 370 * 24 * 60 * 60 * 1000);
+
+    let open: number | null = null;
+    let high: number | null = null;
+    let low: number | null = null;
+    let previousClose: number | null = null;
+
+    if (this.provider.getSnapshot) {
+      try {
+        const snap = await this.provider.getSnapshot(upper);
+        if (snap.daily) {
+          open = snap.daily.open;
+          high = snap.daily.high;
+          low = snap.daily.low;
+        }
+        if (snap.previousDaily) {
+          previousClose = snap.previousDaily.close;
+        }
+      } catch {
+        // fall through to bars-only path
+      }
+    }
+
+    const bars = await this.provider.getHistoricalBars(upper, '1d', from, to);
+    if (bars.length === 0 && open == null) {
+      throw new NotFoundException(`No stats for ${symbol}`);
+    }
+
+    const latest = bars.at(-1) ?? null;
+    const previous = bars.length >= 2 ? bars[bars.length - 2] : null;
+    if (open == null && latest) open = latest.open;
+    if (high == null && latest) high = latest.high;
+    if (low == null && latest) low = latest.low;
+    if (previousClose == null && previous) previousClose = previous.close;
+
+    const week52High =
+      bars.length > 0 ? Math.max(...bars.map((b) => b.high)) : high;
+    const week52Low =
+      bars.length > 0 ? Math.min(...bars.map((b) => b.low)) : low;
+    const avgVolume =
+      bars.length > 0
+        ? bars.reduce((sum, b) => sum + b.volume, 0) / bars.length
+        : null;
+
+    return {
+      symbol: upper,
+      open,
+      high,
+      low,
+      previousClose,
+      week52High,
+      week52Low,
+      avgVolume,
+      marketCap: null,
+      peRatio: null,
+      priceToBook: null,
+      asOf: (latest?.timestamp ?? to).toISOString(),
+    };
   }
 }

@@ -6,9 +6,11 @@ import { useSession } from "next-auth/react";
 import { ScanResultsTable } from "@/components/scanner/ScanResultsTable";
 import { SignalCard } from "@/components/signals/SignalCard";
 import { LiveChart } from "@/components/charts/LiveChart";
+import { StockStatsPanel } from "@/components/market/StockStatsPanel";
 import { SpotlightCard } from "@/components/reactbits/SpotlightCard";
 import { CountUp } from "@/components/reactbits/CountUp";
 import { FadeIn } from "@/components/reactbits/FadeIn";
+import { AnimatedList } from "@/components/reactbits/AnimatedList";
 import { CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
@@ -39,6 +41,10 @@ export default function DashboardPage() {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [selected, setSelected] = useState<ScanRow | null>(
     demoMode ? DEMO_SCAN_ROWS[0] ?? null : null,
+  );
+  /** Chart / stats symbol — follows table selection and chart picker. */
+  const [focusSymbol, setFocusSymbol] = useState<string | null>(
+    demoMode ? DEMO_SCAN_ROWS[0]?.symbol ?? null : null,
   );
   const [watchlists, setWatchlists] = useState<Watchlist[]>([]);
   const [tradeProfile, setTradeProfile] = useState<{
@@ -72,11 +78,13 @@ export default function DashboardPage() {
         if (cancelled || result.rows.length === 0) return;
         setRows(result.rows);
         setSelected(result.rows[0]);
+        setFocusSymbol(result.rows[0]?.symbol ?? null);
         setRowsLive(true);
       } catch {
         if (demoMode && !cancelled) {
           setRows(DEMO_SCAN_ROWS);
           setSelected(DEMO_SCAN_ROWS[0] ?? null);
+          setFocusSymbol(DEMO_SCAN_ROWS[0]?.symbol ?? null);
         }
       }
     })();
@@ -227,23 +235,28 @@ export default function DashboardPage() {
           <ScanResultsTable
             rows={rows}
             selectedSymbol={selected?.symbol}
-            onSelect={setSelected}
+            onSelect={(row) => {
+              setSelected(row);
+              setFocusSymbol(row.symbol);
+            }}
           />
           <div>
             <div className="mb-2 flex items-center justify-between">
-              <div className="flex items-baseline gap-3">
-                <span className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
-                  Chart
-                </span>
-                <h2 className="font-mono text-sm font-medium">{selected?.symbol ?? "—"}</h2>
-              </div>
+              <span className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
+                Chart
+              </span>
               {selected?.stale ? <Badge variant="warning">Stale quote cache</Badge> : null}
             </div>
-            <LiveChart symbol={selected?.symbol} height={280} />
+            <LiveChart
+              symbol={focusSymbol}
+              height={280}
+              onSymbolChange={setFocusSymbol}
+            />
           </div>
         </FadeIn>
 
         <FadeIn delay={200} className="space-y-3">
+          <StockStatsPanel key={focusSymbol ?? "none"} symbol={focusSymbol} token={token} />
           <SpotlightCard className="rounded-2xl">
             <CardHeader className="pb-2">
               <MicroLabel>Intelligence</MicroLabel>
@@ -254,16 +267,20 @@ export default function DashboardPage() {
             </CardHeader>
           </SpotlightCard>
           {aiEnabled ? (
-            signals.map((s) => (
-              <SignalCard
-                key={s.id}
-                signal={s}
-                token={token}
-                broker={tradeProfile?.broker ?? null}
-                maxRiskPerTrade={tradeProfile?.maxRiskPerTrade ?? null}
-                showOrderAction={false}
-              />
-            ))
+            <AnimatedList maxVisible={4} itemHeight={200}>
+              <div className="space-y-3">
+                {signals.map((s) => (
+                  <SignalCard
+                    key={s.id}
+                    signal={s}
+                    token={token}
+                    broker={tradeProfile?.broker ?? null}
+                    maxRiskPerTrade={tradeProfile?.maxRiskPerTrade ?? null}
+                    showOrderAction={false}
+                  />
+                ))}
+              </div>
+            </AnimatedList>
           ) : (
             <SpotlightCard className="rounded-2xl border-dashed">
               <CardContent className="space-y-3 py-6">

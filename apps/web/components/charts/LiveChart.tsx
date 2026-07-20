@@ -84,10 +84,13 @@ export function LiveChart({
   symbol,
   height = 300,
   className,
+  onSymbolChange,
 }: {
   symbol: string | null | undefined;
   height?: number;
   className?: string;
+  /** Fired when the chart picker (or prop sync) selects a symbol. */
+  onSymbolChange?: (symbol: string) => void;
 }) {
   const { data: session } = useSession();
   const token = session?.accessToken;
@@ -111,9 +114,16 @@ export function LiveChart({
   const { candles, provider, loading, error } = useBars(activeSymbol, timeframe);
 
   useEffect(() => {
-    if (symbol) setActiveSymbol(symbol);
+    if (!symbol) return;
+    setActiveSymbol(symbol);
   }, [symbol]);
 
+  function selectSymbol(next: string) {
+    const upper = next.trim().toUpperCase();
+    if (!upper) return;
+    setActiveSymbol(upper);
+    onSymbolChange?.(upper);
+  }
   useEffect(() => {
     try {
       const stored = window.localStorage.getItem(INDICATOR_STORAGE_KEY);
@@ -297,7 +307,7 @@ export function LiveChart({
           <SymbolPicker
             symbols={symbols}
             value={activeSymbol}
-            onChange={setActiveSymbol}
+            onChange={selectSymbol}
             loading={symbolsLoading}
           />
           <div className="flex items-center gap-1 rounded-md border border-border bg-panel p-0.5">

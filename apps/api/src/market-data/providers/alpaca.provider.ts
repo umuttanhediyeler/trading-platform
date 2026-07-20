@@ -59,6 +59,31 @@ export class AlpacaDataProvider implements MarketDataProvider {
     };
   }
 
+  async getSnapshot(symbol: string): Promise<{
+    daily: Bar | null;
+    previousDaily: Bar | null;
+  }> {
+    const data = await this.fetchJson(
+      `/v2/stocks/${encodeURIComponent(symbol)}/snapshot?feed=${this.feed}`,
+    );
+    const mapBar = (raw: any): Bar | null => {
+      if (!raw || raw.o == null) return null;
+      return {
+        symbol,
+        timestamp: raw.t ? new Date(raw.t) : new Date(),
+        open: Number(raw.o),
+        high: Number(raw.h),
+        low: Number(raw.l),
+        close: Number(raw.c),
+        volume: Number(raw.v ?? 0),
+      };
+    };
+    return {
+      daily: mapBar(data?.dailyBar),
+      previousDaily: mapBar(data?.prevDailyBar),
+    };
+  }
+
   async getHistoricalBars(
     symbol: string,
     timeframe: Timeframe,
