@@ -13,13 +13,10 @@ import { Prisma } from '@prisma/client';
 import { Queue, Worker } from 'bullmq';
 import { signalsCreatedTotal } from '../metrics/counters';
 import { PrismaService } from '../prisma/prisma.service';
-import { SIGNAL_UNIVERSE_SIZE, UNIVERSE } from '../market-data/universe';
-
-/**
- * Signal generation and retraining stay on the most liquid top-N slice of the
- * full ~100-symbol universe to bound per-cycle latency and ML-service load.
- */
-const SIGNAL_UNIVERSE = UNIVERSE.slice(0, SIGNAL_UNIVERSE_SIZE);
+import { UNIVERSE } from '../market-data/universe';
+import { SignalUniverseService } from '../market-data/signal-universe.service';
+import { computePositionSize } from '../execution/position-sizing';
+import { computeRiskTargets, STRATEGY_RISK } from '../execution/risk-targets';
 import {
   MARKET_DATA_PROVIDER,
   MarketDataProvider,
@@ -52,17 +49,6 @@ export interface PredictionResponse {
   feature_timestamp: string;
 }
 
-const STRATEGY_RISK: Record<
-  string,
-  { stopLossPercent: number; takeProfitPercent: number }
-> = {
-  tb_tight_scalp: { stopLossPercent: 0.005, takeProfitPercent: 0.01 },
-  tb_balanced: { stopLossPercent: 0.01, takeProfitPercent: 0.02 },
-  tb_wide_swing: { stopLossPercent: 0.02, takeProfitPercent: 0.04 },
-  tb_momentum: { stopLossPercent: 0.01, takeProfitPercent: 0.03 },
-  tb_mean_revert: { stopLossPercent: 0.015, takeProfitPercent: 0.015 },
-};
-
 /**
  * HTTP bridge to the Python ML service. Owns nightly selection, weekly
  * retrain, and intraday signal-generation cron jobs.
@@ -78,6 +64,7 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
     private readonly prisma: PrismaService,
     private readonly gateway: SignalsGateway,
     private readonly simulation: SimulationService,
+    private readonly signalUniverse: SignalUniverseService,
     @Inject(MARKET_DATA_PROVIDER)
     private readonly marketData: MarketDataProvider,
   ) {}
@@ -271,7 +258,7 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
       'weekly-retrain',
       '0 23 * * 0',
       async () => {
-        for (const symbol of SIGNAL_UNIVERSE.slice(0, 5)) {
+        for (const symbol of UNIVERSE.slice(0, 10)) {
           const bars = await this.loadBars(symbol, 500);
           if (bars.length < 120) continue;
           await this.train(symbol, bars, true);
@@ -739,13 +726,14 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
     });
     const strategyId = selections[0]?.strategyId ?? 'tb_balanced';
     const risk = STRATEGY_RISK[strategyId] ?? STRATEGY_RISK.tb_balanced;
+    const signalUniverse = await this.signalUniverse.build();
     const shadowCandidatesByRegime = await this.loadShadowCandidates();
     let predictions = 0;
     let signalsCreated = 0;
     let shadowPredictions = 0;
     let shadowEvaluations = 0;
 
-    for (const symbol of SIGNAL_UNIVERSE) {
+    for (const symbol of signalUniverse) {
       try {
         const bars = await this.loadBars(symbol, 120);
         if (bars.length < 60) continue;
@@ -809,8 +797,14 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
 
         const last = bars[bars.length - 1];
         const entry = last.close;
-        const stop = entry * (1 - risk.stopLossPercent);
-        const target = entry * (1 + risk.takeProfitPercent);
+        const signalTargets = computeRiskTargets({
+          entry,
+          strategyId,
+          maxRiskPerTrade: 2,
+          confidence: prediction.confidence,
+        });
+        const stop = signalTargets.stopPrice;
+        const target = signalTargets.targetPrice;
         const existing = await this.prisma.signal.findFirst({
           where: {
             symbol,
@@ -855,18 +849,36 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
               status: { in: ['active', 'trialing'] },
             },
           },
-          select: { id: true },
-          take: 100,
+          select: {
+            id: true,
+            riskSettings: true,
+            simAccount: { select: { balance: true } },
+          },
+          take: 200,
         });
         for (const user of premiumUsers) {
+          const maxRisk = user.riskSettings?.maxRiskPerTrade ?? 2;
+          const userTargets = computeRiskTargets({
+            entry,
+            strategyId,
+            maxRiskPerTrade: maxRisk,
+            confidence: prediction.confidence,
+          });
+          const equity = Number(user.simAccount?.balance ?? 100_000);
+          const qty = computePositionSize({
+            equity,
+            entryPrice: entry,
+            stopPrice: userTargets.stopPrice,
+            maxRiskPerTrade: maxRisk,
+          });
           await this.simulation
             .openOrder(user.id, {
               symbol,
               side: 'buy',
-              quantity: 1,
+              quantity: qty,
               entryPrice: entry,
-              stopPrice: stop,
-              targetPrice: target,
+              stopPrice: userTargets.stopPrice,
+              targetPrice: userTargets.targetPrice,
               source: 'ai_signal',
             })
             .catch(() => undefined);

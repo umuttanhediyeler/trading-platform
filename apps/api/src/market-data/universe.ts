@@ -132,10 +132,13 @@ export const REALTIME_UNIVERSE_SIZE = 30;
 export const MAX_REALTIME_SYMBOLS = 100;
 
 /**
- * ML signal generation stays on a top-N slice of the universe to bound
- * per-cycle latency (each symbol costs a bar load + model inference).
+ * ML signal generation uses a dynamic top-N slice (see SignalUniverseService).
+ * Hard cap bounds per-cycle latency (bar load + inference per symbol).
  */
-export const SIGNAL_UNIVERSE_SIZE = 25;
+export const MAX_SIGNAL_UNIVERSE_SIZE = 80;
+
+/** @deprecated Use MAX_SIGNAL_UNIVERSE_SIZE — kept for tests/docs. */
+export const SIGNAL_UNIVERSE_SIZE = MAX_SIGNAL_UNIVERSE_SIZE;
 
 /**
  * Merge a base symbol list with user watchlist symbols: de-duplicates,

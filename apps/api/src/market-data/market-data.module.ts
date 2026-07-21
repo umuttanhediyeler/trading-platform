@@ -10,6 +10,7 @@ import { IngestionWorker } from './ingestion.worker';
 import { MarketAssetsService } from './market-assets.service';
 import { MarketDataController } from './market-data.controller';
 import { QuoteCacheService } from './quote-cache.service';
+import { SignalUniverseService } from './signal-universe.service';
 
 @Module({
   controllers: [MarketDataController],
@@ -43,12 +44,14 @@ import { QuoteCacheService } from './quote-cache.service';
     BarAggregatorService,
     DailyBarsService,
     IngestionWorker,
+    SignalUniverseService,
   ],
   exports: [
     MARKET_DATA_PROVIDER,
     QuoteCacheService,
     BarAggregatorService,
     DailyBarsService,
+    SignalUniverseService,
   ],
 })
 export class MarketDataModule {}

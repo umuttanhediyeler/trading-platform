@@ -12,6 +12,8 @@ import { BrokerRegistry } from '../broker/broker-registry.service';
 import { AlertsService } from '../common/alerts.service';
 import { decryptSecret } from '../common/crypto';
 import { PrismaService } from '../prisma/prisma.service';
+import { computePositionSize } from './position-sizing';
+import { computeRiskTargets } from './risk-targets';
 
 export const AUTO_TRADE_QUEUE = 'auto-trade';
 
@@ -103,13 +105,15 @@ export class AutoTradeWorker implements OnModuleInit, OnModuleDestroy {
 
         try {
           const entry = Number(signal.entryPrice);
-          const stop = Number(signal.stopPrice);
-          const target = Number(signal.targetPrice);
-          const riskPct = user.riskSettings?.maxRiskPerTrade ?? 1;
-          // Conservative fixed-risk sizing: $ risk budget / stop distance.
-          const stopDistance = Math.max(Math.abs(entry - stop), entry * 0.005);
-          const riskBudget = 100_000 * (riskPct / 100); // paper default notional
-          const qty = Math.max(1, Math.floor(riskBudget / stopDistance));
+          const maxRisk = user.riskSettings?.maxRiskPerTrade ?? 2;
+          const userTargets = computeRiskTargets({
+            entry,
+            strategyId: signal.strategyId,
+            maxRiskPerTrade: maxRisk,
+            confidence: signal.confidence,
+          });
+          const stop = userTargets.stopPrice;
+          const target = userTargets.targetPrice;
 
           const creds = {
             broker: user.brokerLink.broker,
@@ -117,6 +121,29 @@ export class AutoTradeWorker implements OnModuleInit, OnModuleDestroy {
             apiSecret: decryptSecret(user.brokerLink.apiSecretEnc, encKey),
             mode: user.brokerLink.mode as 'paper' | 'live',
           };
+
+          let equity = 100_000;
+          try {
+            const balance = await this.registry
+              .get(creds.broker)
+              .getAccountBalance(creds);
+            const parsed = Number(balance.equity);
+            if (Number.isFinite(parsed) && parsed > 0) equity = parsed;
+          } catch {
+            const sim = await this.prisma.simulatedAccount.findUnique({
+              where: { userId: user.id },
+              select: { balance: true },
+            });
+            const simBal = Number(sim?.balance ?? 0);
+            if (simBal > 0) equity = simBal;
+          }
+
+          const qty = computePositionSize({
+            equity,
+            entryPrice: entry,
+            stopPrice: stop,
+            maxRiskPerTrade: maxRisk,
+          });
 
           // Bracket entry (attached take-profit + stop-loss) whenever the
           // signal levels are coherent for a long; plain market otherwise.
@@ -129,7 +156,7 @@ export class AutoTradeWorker implements OnModuleInit, OnModuleDestroy {
             {
               symbol: signal.symbol,
               side: 'buy',
-              quantity: Math.min(qty, 10),
+              quantity: qty,
               type: 'market',
               clientOrderId,
               entryPriceHint: entry > 0 ? entry : undefined,

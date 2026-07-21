@@ -1,6 +1,10 @@
 import { PrismaClient } from '@prisma/client';
+import * as bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
+
+const DEMO_PREMIUM_EMAIL = 'premium.deneme@apexscan.dev';
+const DEMO_PREMIUM_PASSWORD = 'Premium123!';
 
 /**
  * Entitlement matrix per plan tier (mirrors the pricing table in the master prompt).
@@ -41,6 +45,63 @@ const ENTITLEMENTS: Array<{ planTier: string; key: string; value: string }> = [
   { planTier: 'premium', key: 'realtime_data', value: 'true' },
 ];
 
+async function seedDemoPremiumUser() {
+  const passwordHash = await bcrypt.hash(DEMO_PREMIUM_PASSWORD, 10);
+  await prisma.user.upsert({
+    where: { email: DEMO_PREMIUM_EMAIL },
+    update: {
+      passwordHash,
+      provider: 'credentials',
+      executionMode: 'full_auto',
+      subscription: {
+        upsert: {
+          create: { planTier: 'premium', status: 'active' },
+          update: { planTier: 'premium', status: 'active' },
+        },
+      },
+      riskSettings: {
+        upsert: {
+          create: {
+            maxRiskPerTrade: 2.5,
+            maxDailyTrades: 12,
+            maxDailyLossPercent: 3,
+          },
+          update: {
+            maxRiskPerTrade: 2.5,
+            maxDailyTrades: 12,
+            maxDailyLossPercent: 3,
+            killSwitchActive: false,
+            killSwitchReason: null,
+            killSwitchAt: null,
+          },
+        },
+      },
+      simAccount: {
+        upsert: {
+          create: { balance: 100_000 },
+          update: {},
+        },
+      },
+    },
+    create: {
+      email: DEMO_PREMIUM_EMAIL,
+      passwordHash,
+      provider: 'credentials',
+      executionMode: 'full_auto',
+      subscription: { create: { planTier: 'premium', status: 'active' } },
+      simAccount: { create: { balance: 100_000 } },
+      riskSettings: {
+        create: {
+          maxRiskPerTrade: 2.5,
+          maxDailyTrades: 12,
+          maxDailyLossPercent: 3,
+        },
+      },
+    },
+  });
+  console.log(`Seeded demo premium user: ${DEMO_PREMIUM_EMAIL}`);
+}
+
 async function main() {
   for (const e of ENTITLEMENTS) {
     await prisma.entitlement.upsert({
@@ -50,6 +111,8 @@ async function main() {
     });
   }
   console.log(`Seeded ${ENTITLEMENTS.length} entitlements.`);
+
+  await seedDemoPremiumUser();
 }
 
 main()

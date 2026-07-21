@@ -211,9 +211,9 @@ model RiskSettings {
   id                  String    @id @default(uuid())
   userId              String    @unique
   user                User      @relation(fields: [userId], references: [id])
-  maxDailyTrades      Int       @default(5)
-  maxDailyLossPercent Float     @default(2.0)
-  maxRiskPerTrade     Float     @default(1.0)
+  maxDailyTrades      Int       @default(10)
+  maxDailyLossPercent Float     @default(3.0)
+  maxRiskPerTrade     Float     @default(2.0)
   killSwitchActive    Boolean   @default(false)
   killSwitchReason    String?
   killSwitchAt        DateTime?
