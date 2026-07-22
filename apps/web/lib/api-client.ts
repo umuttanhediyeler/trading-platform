@@ -93,13 +93,12 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   }
 
   if (!res.ok) {
-    const message =
-      typeof parsed === "object" &&
-      parsed !== null &&
-      "message" in parsed &&
-      typeof (parsed as { message: unknown }).message === "string"
-        ? (parsed as { message: string }).message
-        : `Request failed (${res.status})`;
+    let message = `Request failed (${res.status})`;
+    if (typeof parsed === "object" && parsed !== null && "message" in parsed) {
+      const raw = (parsed as { message: unknown }).message;
+      if (typeof raw === "string") message = raw;
+      else if (Array.isArray(raw)) message = raw.map(String).join("; ");
+    }
     throw new ApiError(message, res.status, parsed);
   }
 

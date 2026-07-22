@@ -11,6 +11,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { Queue, Worker } from 'bullmq';
+import { bullmqConnection } from '../common/bullmq-redis';
 import { signalsCreatedTotal } from '../metrics/counters';
 import { PrismaService } from '../prisma/prisma.service';
 import { UNIVERSE } from '../market-data/universe';
@@ -772,10 +773,16 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
           shadowEvaluations += shadowResult.evaluations;
         }
 
+        const tradeSide: 'buy' | 'sell' | null =
+          prediction.prediction === 'tp'
+            ? 'buy'
+            : prediction.prediction === 'sl'
+              ? 'sell'
+              : null;
         if (
           prediction.fallback ||
           !prediction.model_version ||
-          prediction.prediction !== 'tp' ||
+          !tradeSide ||
           prediction.confidence < minConfidence
         ) {
           continue;
@@ -802,6 +809,7 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
           strategyId,
           maxRiskPerTrade: 2,
           confidence: prediction.confidence,
+          side: tradeSide,
         });
         const stop = signalTargets.stopPrice;
         const target = signalTargets.targetPrice;
@@ -863,6 +871,7 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
             strategyId,
             maxRiskPerTrade: maxRisk,
             confidence: prediction.confidence,
+            side: tradeSide,
           });
           const equity = Number(user.simAccount?.balance ?? 100_000);
           const qty = computePositionSize({
@@ -874,7 +883,7 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
           await this.simulation
             .openOrder(user.id, {
               symbol,
-              side: 'buy',
+              side: tradeSide,
               quantity: qty,
               entryPrice: entry,
               stopPrice: userTargets.stopPrice,
@@ -884,7 +893,7 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
             .catch(() => undefined);
         }
         this.logger.log(
-          `Signal created ${symbol} conf=${prediction.confidence.toFixed(2)}`,
+          `Signal created ${tradeSide} ${symbol} conf=${prediction.confidence.toFixed(2)}`,
         );
       } catch (err) {
         this.logger.warn(
@@ -917,14 +926,9 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
   }
 
   private connectionOptions() {
-    const url = new URL(
+    return bullmqConnection(
       this.config.get<string>('REDIS_URL', 'redis://localhost:6379'),
     );
-    return {
-      host: url.hostname,
-      port: Number(url.port || 6379),
-      password: url.password || undefined,
-    };
   }
 
   async onModuleDestroy() {

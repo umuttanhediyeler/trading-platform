@@ -232,7 +232,11 @@ export default function ScannerPage() {
       )}
 
       {error ? (
-        <ErrorState description={error} onRetry={() => setError(null)} />
+        <ErrorState
+          title="Tarama başarısız"
+          description={error}
+          onRetry={() => setError(null)}
+        />
       ) : (
         <FadeIn delay={140}>
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">

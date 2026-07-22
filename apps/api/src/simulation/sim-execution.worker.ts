@@ -6,8 +6,9 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Queue, Worker } from 'bullmq';
-import { PrismaService } from '../prisma/prisma.service';
+import { bullmqConnection } from '../common/bullmq-redis';
 import { QuoteCacheService } from '../market-data/quote-cache.service';
+import { PrismaService } from '../prisma/prisma.service';
 
 export const SIM_EXECUTION_QUEUE = 'sim-execution';
 
@@ -98,14 +99,9 @@ export class SimExecutionWorker implements OnModuleInit, OnModuleDestroy {
   }
 
   private connectionOptions() {
-    const url = new URL(
+    return bullmqConnection(
       this.config.get<string>('REDIS_URL', 'redis://localhost:6379'),
     );
-    return {
-      host: url.hostname,
-      port: Number(url.port || 6379),
-      password: url.password || undefined,
-    };
   }
 
   async onModuleDestroy() {

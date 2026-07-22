@@ -46,44 +46,49 @@ const ENTITLEMENTS: Array<{ planTier: string; key: string; value: string }> = [
 ];
 
 async function seedDemoPremiumUser() {
-  const passwordHash = await bcrypt.hash(DEMO_PREMIUM_PASSWORD, 10);
-  await prisma.user.upsert({
+  const existing = await prisma.user.findUnique({
     where: { email: DEMO_PREMIUM_EMAIL },
-    update: {
-      passwordHash,
-      provider: 'credentials',
-      executionMode: 'full_auto',
-      subscription: {
-        upsert: {
-          create: { planTier: 'premium', status: 'active' },
-          update: { planTier: 'premium', status: 'active' },
-        },
-      },
-      riskSettings: {
-        upsert: {
-          create: {
-            maxRiskPerTrade: 2.5,
-            maxDailyTrades: 12,
-            maxDailyLossPercent: 3,
-          },
-          update: {
-            maxRiskPerTrade: 2.5,
-            maxDailyTrades: 12,
-            maxDailyLossPercent: 3,
-            killSwitchActive: false,
-            killSwitchReason: null,
-            killSwitchAt: null,
+    select: { id: true },
+  });
+  if (existing) {
+    // Never reset balances, orders, or risk history on re-seed.
+    const passwordHash = await bcrypt.hash(DEMO_PREMIUM_PASSWORD, 10);
+    await prisma.user.update({
+      where: { email: DEMO_PREMIUM_EMAIL },
+      data: {
+        passwordHash,
+        provider: 'credentials',
+        subscription: {
+          upsert: {
+            create: { planTier: 'premium', status: 'active' },
+            update: { planTier: 'premium', status: 'active' },
           },
         },
-      },
-      simAccount: {
-        upsert: {
-          create: { balance: 100_000 },
-          update: {},
+        simAccount: {
+          upsert: {
+            create: { balance: 100_000 },
+            update: {},
+          },
+        },
+        riskSettings: {
+          upsert: {
+            create: {
+              maxRiskPerTrade: 2.5,
+              maxDailyTrades: 12,
+              maxDailyLossPercent: 3,
+            },
+            update: {},
+          },
         },
       },
-    },
-    create: {
+    });
+    console.log(`Refreshed demo premium login for: ${DEMO_PREMIUM_EMAIL}`);
+    return;
+  }
+
+  const passwordHash = await bcrypt.hash(DEMO_PREMIUM_PASSWORD, 10);
+  await prisma.user.create({
+    data: {
       email: DEMO_PREMIUM_EMAIL,
       passwordHash,
       provider: 'credentials',

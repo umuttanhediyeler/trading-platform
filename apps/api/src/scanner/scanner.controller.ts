@@ -5,6 +5,7 @@ import {
   Delete,
   ForbiddenException,
   Get,
+  HttpException,
   NotFoundException,
   Param,
   Post,
@@ -131,15 +132,28 @@ export class ScannerController {
     }
 
     const dsl = scan.filterDSL as unknown as FilterGroup;
-    const { rows, scannedSymbols } = await this.scanExecution.execute(dsl);
+    try {
+      const { rows, scannedSymbols } = await this.scanExecution.execute(dsl);
 
-    if (scannedSymbols === 0) {
+      if (scannedSymbols === 0) {
+        throw new ServiceUnavailableException(
+          'Market data was unavailable for every symbol in the scan universe',
+        );
+      }
+      this.gateway.emitScanResult(user.id, scan.id, rows);
+      return { scanId: scan.id, rows };
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (/connection pool|P2024|Timed out fetching/i.test(message)) {
+        throw new ServiceUnavailableException(
+          'Database is busy — please retry the scan in a few seconds',
+        );
+      }
       throw new ServiceUnavailableException(
-        'Market data was unavailable for every symbol in the scan universe',
+        `Scan failed: ${message.slice(0, 200)}`,
       );
     }
-    this.gateway.emitScanResult(user.id, scan.id, rows);
-    return { scanId: scan.id, rows };
   }
 
   private async assertValidAndAllowed(

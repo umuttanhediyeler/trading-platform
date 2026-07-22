@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Queue, Worker } from 'bullmq';
+import { bullmqConnection } from '../common/bullmq-redis';
 import { AlertsService } from '../common/alerts.service';
 import { UNIVERSE } from '../market-data/universe';
 import { PrismaService } from '../prisma/prisma.service';
@@ -96,14 +97,9 @@ export class ModelLifecycleService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleInit() {
     if (this.config.get('DISABLE_WORKERS') === 'true') return;
-    const url = new URL(
+    const connection = bullmqConnection(
       this.config.get<string>('REDIS_URL', 'redis://localhost:6379'),
     );
-    const connection = {
-      host: url.hostname,
-      port: Number(url.port || 6379),
-      password: url.password || undefined,
-    };
     this.queue = new Queue(MODEL_LIFECYCLE_QUEUE, { connection });
     this.worker = new Worker(
       MODEL_LIFECYCLE_QUEUE,

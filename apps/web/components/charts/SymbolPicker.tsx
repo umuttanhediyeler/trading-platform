@@ -3,6 +3,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, Search, Star } from "lucide-react";
 import type { MarketSymbol } from "@/lib/api-client";
+import { StockLogo } from "@/components/shared/StockLogo";
 import { cn } from "@/lib/utils";
 
 const MAX_VISIBLE_RESULTS = 50;
@@ -175,6 +176,7 @@ export function SymbolPicker({ symbols, value, onChange, loading = false }: Symb
                     index === activeIndex ? "bg-accent text-accent-foreground" : "text-foreground",
                   )}
                 >
+                  <StockLogo symbol={item.symbol} size="sm" />
                   <span className="w-14 shrink-0 font-mono text-sm font-semibold">{item.symbol}</span>
                   <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">
                     {item.name}

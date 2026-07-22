@@ -17,6 +17,8 @@ export interface RiskTargetInput {
   maxRiskPerTrade: number;
   /** Model confidence 0–1; higher confidence widens reward target. */
   confidence?: number;
+  /** Long (buy) or short (sell). Shorts invert stop/target around entry. */
+  side?: 'buy' | 'sell';
 }
 
 export interface RiskTargetResult {
@@ -24,6 +26,7 @@ export interface RiskTargetResult {
   targetPrice: number;
   stopLossPercent: number;
   takeProfitPercent: number;
+  side: 'buy' | 'sell';
 }
 
 /**
@@ -32,6 +35,7 @@ export interface RiskTargetResult {
  * (capped so risk guard stays the backstop).
  */
 export function computeRiskTargets(input: RiskTargetInput): RiskTargetResult {
+  const side = input.side ?? 'buy';
   const base = STRATEGY_RISK[input.strategyId] ?? STRATEGY_RISK.tb_balanced;
   const appetite = Math.min(3, Math.max(0.5, input.maxRiskPerTrade / 1));
 
@@ -53,10 +57,31 @@ export function computeRiskTargets(input: RiskTargetInput): RiskTargetResult {
   );
   const takeProfitPercent = Math.min(0.12, stopLossPercent * rewardRatio);
 
+  if (side === 'sell') {
+    return {
+      stopPrice: input.entry * (1 + stopLossPercent),
+      targetPrice: input.entry * (1 - takeProfitPercent),
+      stopLossPercent,
+      takeProfitPercent,
+      side,
+    };
+  }
+
   return {
     stopPrice: input.entry * (1 - stopLossPercent),
     targetPrice: input.entry * (1 + takeProfitPercent),
     stopLossPercent,
     takeProfitPercent,
+    side,
   };
+}
+
+/** Infer trade side from barrier geometry when Signal has no explicit side. */
+export function inferSignalSide(
+  entry: number,
+  stop: number,
+  target: number,
+): 'buy' | 'sell' {
+  if (stop > entry && target < entry) return 'sell';
+  return 'buy';
 }

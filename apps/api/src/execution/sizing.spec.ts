@@ -1,3 +1,4 @@
+import { describe, expect, it } from '@jest/globals';
 import { computePositionSize } from './position-sizing';
 import { computeRiskTargets } from './risk-targets';
 

@@ -15,6 +15,7 @@ import { CardContent, CardDescription, CardHeader, CardTitle } from "@/component
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { apiClient } from "@/lib/api-client";
+import { StockLogo } from "@/components/shared/StockLogo";
 import { DEMO_SCAN_ROWS, DEMO_SIM_ACCOUNT } from "@/lib/demo-data";
 import { useExecutionStore } from "@/lib/store";
 import { hasEntitlement } from "@/lib/entitlements";
@@ -212,12 +213,20 @@ export default function DashboardPage() {
                 watchlists.map((wl) => (
                   <div
                     key={wl.id}
-                    className="rounded-xl border border-border/70 p-3 transition-colors hover:border-primary/40"
+                    className="rounded-xl border border-border/70 bg-gradient-to-br from-card to-secondary/15 p-3 transition-colors hover:border-primary/40"
                   >
                     <p className="text-sm font-medium">{wl.name}</p>
-                    <p className="mt-1 font-mono text-xs text-muted-foreground">
-                      {wl.symbols.join(" · ")}
-                    </p>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {wl.symbols.map((symbol) => (
+                        <span
+                          key={symbol}
+                          className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-background/70 py-0.5 pl-0.5 pr-2 text-[11px]"
+                        >
+                          <StockLogo symbol={symbol} size="sm" />
+                          <span className="font-mono font-semibold">{symbol}</span>
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 ))
               )}

@@ -12,8 +12,9 @@ import { BrokerRegistry } from '../broker/broker-registry.service';
 import { AlertsService } from '../common/alerts.service';
 import { decryptSecret } from '../common/crypto';
 import { PrismaService } from '../prisma/prisma.service';
+import { bullmqConnection } from '../common/bullmq-redis';
 import { computePositionSize } from './position-sizing';
-import { computeRiskTargets } from './risk-targets';
+import { computeRiskTargets, inferSignalSide } from './risk-targets';
 
 export const AUTO_TRADE_QUEUE = 'auto-trade';
 
@@ -106,11 +107,17 @@ export class AutoTradeWorker implements OnModuleInit, OnModuleDestroy {
         try {
           const entry = Number(signal.entryPrice);
           const maxRisk = user.riskSettings?.maxRiskPerTrade ?? 2;
+          const side = inferSignalSide(
+            entry,
+            Number(signal.stopPrice),
+            Number(signal.targetPrice),
+          );
           const userTargets = computeRiskTargets({
             entry,
             strategyId: signal.strategyId,
             maxRiskPerTrade: maxRisk,
             confidence: signal.confidence,
+            side,
           });
           const stop = userTargets.stopPrice;
           const target = userTargets.targetPrice;
@@ -145,17 +152,21 @@ export class AutoTradeWorker implements OnModuleInit, OnModuleDestroy {
             maxRiskPerTrade: maxRisk,
           });
 
-          // Bracket entry (attached take-profit + stop-loss) whenever the
-          // signal levels are coherent for a long; plain market otherwise.
+          // Bracket entry: longs need stop < entry < target; shorts invert.
           const useBracket =
-            entry > 0 && stop > 0 && target > 0 && stop < entry && target > entry;
+            entry > 0 &&
+            stop > 0 &&
+            target > 0 &&
+            (side === 'buy'
+              ? stop < entry && target > entry
+              : stop > entry && target < entry);
 
           await this.orders.submit(
             user.id,
             creds,
             {
               symbol: signal.symbol,
-              side: 'buy',
+              side,
               quantity: qty,
               type: 'market',
               clientOrderId,
@@ -176,7 +187,7 @@ export class AutoTradeWorker implements OnModuleInit, OnModuleDestroy {
             },
           );
           this.logger.log(
-            `Auto-trade placed ${signal.symbol} for user ${user.id}`,
+            `Auto-trade placed ${side} ${signal.symbol} qty=${qty} for user ${user.id}`,
           );
         } catch (err) {
           this.logger.warn(
@@ -204,14 +215,9 @@ export class AutoTradeWorker implements OnModuleInit, OnModuleDestroy {
   }
 
   private connectionOptions() {
-    const url = new URL(
+    return bullmqConnection(
       this.config.get<string>('REDIS_URL', 'redis://localhost:6379'),
     );
-    return {
-      host: url.hostname,
-      port: Number(url.port || 6379),
-      password: url.password || undefined,
-    };
   }
 
   async onModuleDestroy() {

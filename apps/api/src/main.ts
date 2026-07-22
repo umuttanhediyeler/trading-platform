@@ -44,6 +44,14 @@ async function bootstrap() {
     });
   }
 
+  // Prevent a single Redis disconnect from killing the Nest process.
+  process.on('unhandledRejection', (reason) => {
+    Logger.warn(
+      `Unhandled rejection: ${reason instanceof Error ? reason.message : String(reason)}`,
+      'Bootstrap',
+    );
+  });
+
   // rawBody is required for Stripe webhook signature verification.
   const app = await NestFactory.create(AppModule, { rawBody: true });
 
@@ -56,12 +64,11 @@ async function bootstrap() {
       app.getHttpServer().once('close', () => void socketAdapter.close());
       Logger.log('Socket.IO Redis adapter connected', 'Bootstrap');
     } catch (error) {
-      if (process.env.NODE_ENV === 'production') throw error;
       Logger.warn(
         `Socket.IO Redis adapter unavailable; using single-instance mode: ${(error as Error).message}`,
         'Bootstrap',
       );
-      await socketAdapter.close();
+      await socketAdapter.close().catch(() => undefined);
     }
   }
 

@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Queue, Worker } from 'bullmq';
+import { bullmqConnection } from '../common/bullmq-redis';
 import { DailyBarsService } from './daily-bars.service';
 import { SCAN_UNIVERSE } from './scan-universe';
 
@@ -110,14 +111,9 @@ export class IngestionWorker implements OnModuleInit, OnModuleDestroy {
   }
 
   private connectionOptions() {
-    const url = new URL(
+    return bullmqConnection(
       this.config.get<string>('REDIS_URL', 'redis://localhost:6379'),
     );
-    return {
-      host: url.hostname,
-      port: Number(url.port || 6379),
-      password: url.password || undefined,
-    };
   }
 
   async onModuleDestroy() {
