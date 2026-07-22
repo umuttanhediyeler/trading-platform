@@ -26,10 +26,13 @@ export function computePositionSize(input: PositionSizeInput): number {
   const exposurePct = input.maxTotalExposurePct ?? 50;
   const maxExposure = equity * (exposurePct / 100);
   const remaining = Math.max(0, maxExposure - (input.currentExposure ?? 0));
+  // Hard per-trade notional cap (15% equity) so one signal cannot eat the book.
+  const maxByTrade = Math.floor((equity * 0.15) / entry);
   const maxByExposure = Math.floor(remaining / entry);
-  if (maxByExposure > 0) {
-    qty = Math.min(qty, maxByExposure);
-  }
+  const caps = [qty];
+  if (maxByTrade > 0) caps.push(maxByTrade);
+  if (maxByExposure > 0) caps.push(maxByExposure);
+  qty = Math.min(...caps);
 
-  return Math.max(1, qty);
+  return Math.max(0, qty);
 }

@@ -189,15 +189,28 @@ export class BrokerOrderService {
           .delete({ where: ledgerKey })
           .catch(() => undefined);
       } else {
-        await this.prisma.brokerOrderLedger
+        const reason = this.errorMessage(error).slice(0, 1000);
+        const updated = await this.prisma.brokerOrderLedger
           .update({
             where: ledgerKey,
             data: {
               status: 'failed',
-              failureReason: this.errorMessage(error).slice(0, 1000),
+              failureReason: reason,
             },
           })
-          .catch(() => undefined);
+          .catch(() => null);
+        if (!updated) {
+          await this.prisma.brokerOrderLedger
+            .updateMany({
+              where: {
+                userId,
+                clientOrderId: order.clientOrderId,
+                status: 'pending',
+              },
+              data: { status: 'failed', failureReason: reason },
+            })
+            .catch(() => undefined);
+        }
       }
       throw error;
     }
@@ -217,6 +230,7 @@ export class BrokerOrderService {
     if (normalized.includes('fail') || normalized.includes('reject')) {
       return 'failed';
     }
+    // accepted / new / partially_filled / filled / done_for_day → submitted
     return 'submitted';
   }
 

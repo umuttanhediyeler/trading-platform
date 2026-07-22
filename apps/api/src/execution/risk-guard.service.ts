@@ -110,21 +110,34 @@ export class RiskGuardService {
     }
 
     if (account) {
-      const realizedPnl = todayOrders
-        .filter((o) => o.pnl !== null)
-        .reduce((sum, o) => sum + Number(o.pnl), 0);
-      const balance = Number(account.balance);
-      const lossPercent =
-        balance > 0 && realizedPnl < 0 ? (-realizedPnl / balance) * 100 : 0;
+      // AI-signal sim mirrors are portfolio visibility only — counting their
+      // PnL here trips kill switch on paper noise and freezes real auto-trade.
+      // When a broker is linked, broker-aware checks handle daily loss instead.
+      const hasBroker = Boolean(
+        await this.prisma.brokerLink.findUnique({
+          where: { userId },
+          select: { userId: true },
+        }),
+      );
+      if (!hasBroker) {
+        const realizedPnl = todayOrders
+          .filter((o) => o.pnl !== null && o.source !== 'ai_signal')
+          .reduce((sum, o) => sum + Number(o.pnl), 0);
+        const balance = Number(account.balance);
+        const lossPercent =
+          balance > 0 && realizedPnl < 0
+            ? (-realizedPnl / balance) * 100
+            : 0;
 
-      if (lossPercent >= settings.maxDailyLossPercent) {
-        await this.triggerKillSwitch(
-          userId,
-          `Daily loss limit of ${settings.maxDailyLossPercent}% breached (${lossPercent.toFixed(2)}%)`,
-        );
-        throw new ForbiddenException(
-          'Daily loss limit breached — kill switch activated',
-        );
+        if (lossPercent >= settings.maxDailyLossPercent) {
+          await this.triggerKillSwitch(
+            userId,
+            `Daily loss limit of ${settings.maxDailyLossPercent}% breached (${lossPercent.toFixed(2)}%)`,
+          );
+          throw new ForbiddenException(
+            'Daily loss limit breached — kill switch activated',
+          );
+        }
       }
     }
   }
@@ -419,7 +432,12 @@ export class RiskGuardService {
     const rows = await this.prisma.brokerOrderLedger.findMany({
       where: {
         userId,
-        status: { in: ['pending', 'submitted'] },
+        OR: [
+          { status: 'submitted' },
+          // Only count pending rows that actually reached the broker —
+          // abandoned local reservations must not block new trades.
+          { status: 'pending', brokerOrderId: { not: null } },
+        ],
         ...(excludeClientOrderId
           ? { clientOrderId: { not: excludeClientOrderId } }
           : {}),

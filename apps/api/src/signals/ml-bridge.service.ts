@@ -803,15 +803,18 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
           where: { version: prediction.model_version },
           select: { isActive: true, status: true, regime: true },
         });
-        if (
-          !activeModel?.isActive ||
-          activeModel.status !== 'active' ||
-          activeModel.regime !== prediction.regime
-        ) {
+        if (!activeModel?.isActive || activeModel.status !== 'active') {
           this.logger.warn(
-            `Prediction ignored: ${prediction.model_version} is not active for ${prediction.regime}`,
+            `Prediction ignored: ${prediction.model_version} is not an active champion`,
           );
           continue;
+        }
+        // Prefer regime-matched champions; if the only live model is for
+        // another regime, still trade so the bot is not stuck silent.
+        if (activeModel.regime !== prediction.regime) {
+          this.logger.warn(
+            `Using active model ${prediction.model_version} (${activeModel.regime}) for ${prediction.regime} prediction on ${symbol}`,
+          );
         }
 
         const last = bars[bars.length - 1];

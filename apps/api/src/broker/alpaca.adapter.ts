@@ -132,15 +132,32 @@ export class AlpacaAdapter implements BrokerAdapter {
     body?: Record<string, unknown>,
   ): Promise<any> {
     const baseUrl = creds.mode === 'live' ? LIVE_URL : PAPER_URL;
-    const res = await fetch(`${baseUrl}${path}`, {
-      method,
-      headers: {
-        'APCA-API-KEY-ID': creds.apiKey,
-        'APCA-API-SECRET-KEY': creds.apiSecret,
-        'Content-Type': 'application/json',
-      },
-      body: body ? JSON.stringify(body) : undefined,
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15_000);
+    let res: Response;
+    try {
+      res = await fetch(`${baseUrl}${path}`, {
+        method,
+        headers: {
+          'APCA-API-KEY-ID': creds.apiKey,
+          'APCA-API-SECRET-KEY': creds.apiSecret,
+          'Content-Type': 'application/json',
+        },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      const aborted =
+        error instanceof Error &&
+        (error.name === 'AbortError' || /aborted/i.test(error.message));
+      throw new ServiceUnavailableException(
+        aborted
+          ? `Alpaca ${method} ${path} timed out after 15s`
+          : `Alpaca ${method} ${path} network error: ${(error as Error).message}`,
+      );
+    } finally {
+      clearTimeout(timer);
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       const message = `Alpaca ${method} ${path} failed: ${res.status} ${text}`;

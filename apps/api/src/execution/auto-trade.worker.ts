@@ -94,15 +94,31 @@ export class AutoTradeWorker implements OnModuleInit, OnModuleDestroy {
         );
         continue;
       }
+
+      const creds = {
+        broker: user.brokerLink.broker,
+        apiKey: decryptSecret(user.brokerLink.apiKeyEnc, encKey),
+        apiSecret: decryptSecret(user.brokerLink.apiSecretEnc, encKey),
+        mode: user.brokerLink.mode as 'paper' | 'live',
+      };
+
+      // Keep ledger in sync so "Bekleyen" rows resolve to filled/canceled.
+      await this.orders.reconcile(user.id, creds).catch((err) =>
+        this.logger.warn(
+          `Auto-trade reconcile failed for ${user.id}: ${(err as Error).message}`,
+        ),
+      );
+      await this.recoverStuckPending(user.id, creds);
+
       for (const signal of signals) {
         const clientOrderId = `${signal.id}:${user.id}`.slice(0, 48);
         const existing = await this.prisma.brokerOrderLedger.findUnique({
           where: {
             userId_clientOrderId: { userId: user.id, clientOrderId },
           },
-          select: { id: true },
+          select: { id: true, status: true },
         });
-        if (existing) continue;
+        if (existing && existing.status !== 'failed') continue;
 
         try {
           const entry = Number(signal.entryPrice);
@@ -121,13 +137,6 @@ export class AutoTradeWorker implements OnModuleInit, OnModuleDestroy {
           });
           const stop = userTargets.stopPrice;
           const target = userTargets.targetPrice;
-
-          const creds = {
-            broker: user.brokerLink.broker,
-            apiKey: decryptSecret(user.brokerLink.apiKeyEnc, encKey),
-            apiSecret: decryptSecret(user.brokerLink.apiSecretEnc, encKey),
-            mode: user.brokerLink.mode as 'paper' | 'live',
-          };
 
           let equity = 100_000;
           try {
@@ -151,6 +160,12 @@ export class AutoTradeWorker implements OnModuleInit, OnModuleDestroy {
             stopPrice: stop,
             maxRiskPerTrade: maxRisk,
           });
+          if (qty < 1) {
+            this.logger.warn(
+              `Auto-trade skipped ${signal.symbol}: qty=${qty} too small`,
+            );
+            continue;
+          }
 
           // Bracket entry: longs need stop < entry < target; shorts invert.
           const useBracket =
@@ -161,6 +176,12 @@ export class AutoTradeWorker implements OnModuleInit, OnModuleDestroy {
               ? stop < entry && target > entry
               : stop > entry && target < entry);
 
+          // Failed prior attempt for this signal: new client id so Alpaca accepts.
+          const orderClientId =
+            existing?.status === 'failed'
+              ? `${clientOrderId}:${Date.now().toString(36)}`.slice(0, 48)
+              : clientOrderId;
+
           await this.orders.submit(
             user.id,
             creds,
@@ -169,7 +190,7 @@ export class AutoTradeWorker implements OnModuleInit, OnModuleDestroy {
               side,
               quantity: qty,
               type: 'market',
-              clientOrderId,
+              clientOrderId: orderClientId,
               entryPriceHint: entry > 0 ? entry : undefined,
               ...(useBracket
                 ? {
@@ -193,10 +214,6 @@ export class AutoTradeWorker implements OnModuleInit, OnModuleDestroy {
           this.logger.warn(
             `Auto-trade skipped user=${user.id} signal=${signal.id}: ${(err as Error).message}`,
           );
-          // Expected risk-gate / idempotency rejections (kill switch, daily
-          // limit, duplicate clientOrderId, etc.) are normal control-flow, not
-          // incidents — only alert on genuine (5xx / non-HTTP) failures so the
-          // critical channel is not flooded every minute.
           const expectedRejection =
             err instanceof HttpException && err.getStatus() < 500;
           if (!expectedRejection) {
@@ -210,6 +227,54 @@ export class AutoTradeWorker implements OnModuleInit, OnModuleDestroy {
             });
           }
         }
+      }
+    }
+  }
+
+  /** Pending rows with no broker id after 2 minutes are abandoned submissions. */
+  private async recoverStuckPending(
+    userId: string,
+    creds: {
+      broker: string;
+      apiKey: string;
+      apiSecret: string;
+      mode: 'paper' | 'live';
+    },
+  ) {
+    const cutoff = new Date(Date.now() - 45_000);
+    const stuck = await this.prisma.brokerOrderLedger.findMany({
+      where: {
+        userId,
+        status: 'pending',
+        brokerOrderId: null,
+        createdAt: { lt: cutoff },
+      },
+      take: 50,
+    });
+    for (const row of stuck) {
+      try {
+        const brokerOrder = await this.registry
+          .get(creds.broker)
+          .getOrderByClientOrderId(creds, row.clientOrderId, row.symbol);
+        await this.prisma.brokerOrderLedger.update({
+          where: { id: row.id },
+          data: {
+            brokerOrderId: brokerOrder.id,
+            status: 'submitted',
+            brokerStatus: brokerOrder.status,
+            responsePayload: brokerOrder as never,
+            submittedAt: row.submittedAt ?? new Date(),
+            failureReason: null,
+          },
+        });
+      } catch {
+        await this.prisma.brokerOrderLedger.update({
+          where: { id: row.id },
+          data: {
+            status: 'failed',
+            failureReason: 'Abandoned pending submission (never reached broker)',
+          },
+        });
       }
     }
   }
