@@ -12,7 +12,7 @@ import { apiClient } from "@/lib/api-client";
 import { hasEntitlement } from "@/lib/entitlements";
 import { useExecutionStore } from "@/lib/store";
 import type { Signal } from "@/lib/types";
-import { inferSignalSide, strategyLabel } from "@/lib/strategy-labels";
+import { strategyLabel } from "@/lib/strategy-labels";
 import { formatNumber } from "@/lib/utils";
 
 interface SignalCardProps {
@@ -33,11 +33,6 @@ export function SignalCard({
 }: SignalCardProps) {
   const generated = new Date(signal.generatedAt);
   const status = signalStatus(signal.status);
-  const side =
-    signal.side === "buy" || signal.side === "sell"
-      ? signal.side
-      : inferSignalSide(signal.entryPrice, signal.stopPrice, signal.targetPrice);
-  const isShort = side === "sell";
   const planTier = useExecutionStore((state) => state.planTier);
   const killSwitchActive = useExecutionStore((state) => state.killSwitchActive);
   const [quantity, setQuantity] = useState(1);
@@ -67,7 +62,7 @@ export function SignalCard({
     try {
       const order = await apiClient.placeBrokerOrder(token, {
         symbol: signal.symbol,
-        side,
+        side: "buy",
         quantity,
         type: "market",
         clientOrderId: `oc-${signal.id}`,
@@ -85,17 +80,11 @@ export function SignalCard({
     <SpotlightCard className="rounded-2xl">
       <div className="p-5 pb-2">
         <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
+          <div>
             <SymbolWithLogo symbol={signal.symbol} size="md" symbolClassName="text-lg" />
             <p className="mt-1 text-xs text-muted-foreground">{strategyLabel(signal.strategyId)}</p>
           </div>
-          <div className="flex shrink-0 flex-col items-end gap-1">
-            <Badge
-              variant={isShort ? "destructive" : "success"}
-              className="font-mono"
-            >
-              {isShort ? "SAT / SHORT" : "AL / LONG"}
-            </Badge>
+          <div className="flex flex-col items-end gap-1">
             <SignalConfidenceBadge confidence={signal.confidence} />
             <Badge variant={status.variant}>{status.label}</Badge>
           </div>
@@ -103,16 +92,8 @@ export function SignalCard({
       </div>
       <div className="grid grid-cols-3 gap-3 p-5 pt-3 text-sm">
         <Metric label="Entry" value={formatNumber(signal.entryPrice)} />
-        <Metric
-          label={isShort ? "Stop (üst)" : "Stop"}
-          value={formatNumber(signal.stopPrice)}
-          tone="destructive"
-        />
-        <Metric
-          label={isShort ? "Target (alt)" : "Target"}
-          value={formatNumber(signal.targetPrice)}
-          tone="success"
-        />
+        <Metric label="Stop" value={formatNumber(signal.stopPrice)} tone="destructive" />
+        <Metric label="Target" value={formatNumber(signal.targetPrice)} tone="success" />
         {signal.realizedReturn != null ? (
           <p
             className={`col-span-3 font-mono text-xs ${
@@ -155,9 +136,7 @@ export function SignalCard({
           ) : (
             <div className="space-y-3 rounded-xl border border-border bg-background/60 p-3">
               <div className="flex items-center justify-between gap-2">
-                <strong className="text-sm">
-                  Confirm market {isShort ? "sell" : "buy"}
-                </strong>
+                <strong className="text-sm">Confirm market buy</strong>
                 <Badge variant={broker?.mode === "live" ? "destructive" : "warning"}>
                   {broker?.mode === "live" ? "LIVE MONEY" : "PAPER"}
                 </Badge>

@@ -128,12 +128,19 @@ export class AutoTradeWorker implements OnModuleInit, OnModuleDestroy {
             Number(signal.stopPrice),
             Number(signal.targetPrice),
           );
+          // Paper bot is long-only for now — skip short signals.
+          if (side !== 'buy') {
+            this.logger.debug(
+              `Auto-trade skipped short ${signal.symbol} for user ${user.id}`,
+            );
+            continue;
+          }
           const userTargets = computeRiskTargets({
             entry,
             strategyId: signal.strategyId,
             maxRiskPerTrade: maxRisk,
             confidence: signal.confidence,
-            side,
+            side: 'buy',
           });
           const stop = userTargets.stopPrice;
           const target = userTargets.targetPrice;
