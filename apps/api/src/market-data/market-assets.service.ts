@@ -78,6 +78,43 @@ export class MarketAssetsService {
     }
   }
 
+  /** Fast symbol→name lookup without shipping the full asset list. */
+  async getNameMap(): Promise<Map<string, string>> {
+    const assets = await this.getAssets().catch(() => this.fallbackAssets());
+    return new Map(assets.map((asset) => [asset.symbol, asset.name]));
+  }
+
+  /** Instant map from in-memory cache only (empty if not warmed yet). */
+  async getCachedNameMap(): Promise<Map<string, string>> {
+    if (cachedAssets && Date.now() - cacheTimestamp < ASSET_CACHE_TTL_MS) {
+      return new Map(cachedAssets.map((asset) => [asset.symbol, asset.name]));
+    }
+    return new Map(
+      this.fallbackAssets().map((asset) => [asset.symbol, asset.name]),
+    );
+  }
+
+  /**
+   * Search Alpaca (or fallback) assets by ticker/name. Used when the picker
+   * query is outside the curated ~500 scan universe.
+   */
+  async searchAssets(query: string, limit = 80): Promise<MarketAsset[]> {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return [];
+    const assets = await this.getAssets().catch(() => this.fallbackAssets());
+    const matched: MarketAsset[] = [];
+    for (const asset of assets) {
+      if (
+        asset.symbol.toLowerCase().includes(needle) ||
+        asset.name.toLowerCase().includes(needle)
+      ) {
+        matched.push(asset);
+        if (matched.length >= limit) break;
+      }
+    }
+    return matched;
+  }
+
   private fallbackAssets(): MarketAsset[] {
     return UNIVERSE_INFO.map(({ symbol, name }) => ({ symbol, name }));
   }

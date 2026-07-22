@@ -80,25 +80,46 @@ export function WatchlistManager({ token }: { token?: string }) {
     if (!token || !name.trim() || selectedSymbols.length === 0) return;
     setSaving(true);
     setError(null);
+    const payload = {
+      name: name.trim(),
+      symbols: selectedSymbols,
+    };
     try {
       if (editing) {
-        const updated = await apiClient.updateWatchlist(token, editing.id, {
-          name: name.trim(),
-          symbols: selectedSymbols,
-        });
+        const previous = editing;
+        // Optimistic local update — DB round-trip to Seoul is ~3s.
+        setItems((current) =>
+          current.map((item) =>
+            item.id === previous.id ? { ...item, ...payload } : item,
+          ),
+        );
+        resetForm();
+        const updated = await apiClient.updateWatchlist(token, previous.id, payload);
         setItems((current) => current.map((item) => (item.id === updated.id ? updated : item)));
       } else {
+        const tempId = `temp-${Date.now()}`;
+        const optimistic: Watchlist = {
+          id: tempId,
+          name: payload.name,
+          symbols: payload.symbols,
+        };
+        setItems((current) =>
+          [...current, optimistic].sort((a, b) => a.name.localeCompare(b.name)),
+        );
+        resetForm();
         const created = await apiClient.createWatchlist(
           token,
-          name.trim(),
-          selectedSymbols,
+          payload.name,
+          payload.symbols,
         );
         setItems((current) =>
-          [...current, created].sort((a, b) => a.name.localeCompare(b.name)),
+          current
+            .map((item) => (item.id === tempId ? created : item))
+            .sort((a, b) => a.name.localeCompare(b.name)),
         );
       }
-      resetForm();
     } catch (err) {
+      await load();
       setError(err instanceof Error ? err.message : "Watchlist could not be saved");
     } finally {
       setSaving(false);
@@ -155,6 +176,7 @@ export function WatchlistManager({ token }: { token?: string }) {
             value={selectedSymbols}
             onChange={setSelectedSymbols}
             loading={symbolsLoading}
+            token={token}
             placeholder="AAPL, NVDA veya şirket adı ara…"
           />
 

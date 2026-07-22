@@ -309,10 +309,18 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
     }
     // Wait for post-signal bars; do not invent a path from pre-signal history.
     if (after.length === 0) return null;
+    // Shorts: target < entry < stop. Longs: stop < entry < target.
+    const isShort = stop > entry && target < entry;
     for (const bar of after) {
-      if (bar.low <= stop) return { status: 'hit_stop', resolvedPrice: stop };
-      if (bar.high >= target)
-        return { status: 'hit_target', resolvedPrice: target };
+      if (isShort) {
+        if (bar.high >= stop) return { status: 'hit_stop', resolvedPrice: stop };
+        if (bar.low <= target)
+          return { status: 'hit_target', resolvedPrice: target };
+      } else {
+        if (bar.low <= stop) return { status: 'hit_stop', resolvedPrice: stop };
+        if (bar.high >= target)
+          return { status: 'hit_target', resolvedPrice: target };
+      }
     }
     return null;
   }

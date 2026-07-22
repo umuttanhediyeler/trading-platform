@@ -522,6 +522,8 @@ export const apiClient = {
       token,
     }),
 
-  getMarketSymbols: (token: string) =>
-    request<MarketSymbol[]>("/market-data/symbols", { token }),
+  getMarketSymbols: (token: string, q?: string) => {
+    const query = q?.trim() ? `?q=${encodeURIComponent(q.trim())}` : "";
+    return request<MarketSymbol[]>(`/market-data/symbols${query}`, { token });
+  },
 };

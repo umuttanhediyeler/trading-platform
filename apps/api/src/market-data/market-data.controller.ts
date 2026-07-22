@@ -20,6 +20,7 @@ import {
 } from './providers/market-data-provider.interface';
 import { MarketAssetsService } from './market-assets.service';
 import { QuoteCacheService } from './quote-cache.service';
+import { SCAN_UNIVERSE } from './scan-universe';
 import { UNIVERSE_INFO } from './universe';
 
 const VALID_TIMEFRAMES: Timeframe[] = ['1min', '5min', '15min', '1h', '1d'];
@@ -40,43 +41,59 @@ export class MarketDataController {
     private readonly marketAssets: MarketAssetsService,
   ) {}
 
+  /**
+   * Symbol picker catalog. Returns the curated scan universe (~500) by default
+   * so watchlist UI stays fast. Optional `q` searches the full Alpaca asset
+   * cache for tickers outside that set without shipping 10k+ rows every load.
+   */
   @Get('symbols')
-  async symbols(@Req() req: Request) {
+  async symbols(@Req() req: Request, @Query('q') q?: string) {
     const user = req.user as AuthenticatedUser;
     const watchlists = await this.prisma.watchlist.findMany({
       where: { userId: user.id },
       select: { symbols: true },
     });
     const watchlistSymbols = new Set(
-      watchlists.flatMap(({ symbols }) => symbols.map((symbol) => symbol.trim().toUpperCase())),
+      watchlists.flatMap(({ symbols }) =>
+        symbols.map((symbol) => symbol.trim().toUpperCase()).filter(Boolean),
+      ),
     );
-    const universeBySymbol = new Map(UNIVERSE_INFO.map((info) => [info.symbol, info]));
-    const assets = await this.marketAssets.getAssets();
-    const assetSymbols = new Set(assets.map(({ symbol }) => symbol));
+    const universeBySymbol = new Map(
+      UNIVERSE_INFO.map((info) => [info.symbol, info]),
+    );
+    const needle = q?.trim().toLowerCase() ?? '';
 
-    return [
-      ...assets.map((asset) => {
-        const universeInfo = universeBySymbol.get(asset.symbol);
+    // Warm Alpaca names in the background; never block the picker on a 10k dump.
+    void this.marketAssets.getAssets().catch(() => undefined);
+
+    let nameBySymbol = new Map<string, string>();
+    let extraSymbols: string[] = [];
+    if (needle) {
+      const searched = await this.marketAssets.searchAssets(needle, 80);
+      nameBySymbol = new Map(searched.map((a) => [a.symbol, a.name]));
+      extraSymbols = searched.map((a) => a.symbol);
+    } else {
+      nameBySymbol = await this.marketAssets.getCachedNameMap();
+    }
+
+    const merged = new Set<string>([
+      ...(needle ? extraSymbols : SCAN_UNIVERSE),
+      ...watchlistSymbols,
+      ...UNIVERSE_INFO.map((info) => info.symbol),
+    ]);
+
+    return [...merged]
+      .sort((a, b) => a.localeCompare(b))
+      .map((symbol) => {
+        const universeInfo = universeBySymbol.get(symbol);
         return {
-          ...asset,
+          symbol,
+          name: nameBySymbol.get(symbol) ?? universeInfo?.name ?? symbol,
           ...(universeInfo?.sector ? { sector: universeInfo.sector } : {}),
-          inWatchlist: watchlistSymbols.has(asset.symbol),
+          inWatchlist: watchlistSymbols.has(symbol),
           inUniverse: Boolean(universeInfo),
         };
-      }),
-      ...[...watchlistSymbols]
-        .filter((symbol) => symbol && !assetSymbols.has(symbol))
-        .map((symbol) => {
-          const universeInfo = universeBySymbol.get(symbol);
-          return {
-            symbol,
-            name: universeInfo?.name ?? symbol,
-            ...(universeInfo?.sector ? { sector: universeInfo.sector } : {}),
-            inWatchlist: true,
-            inUniverse: Boolean(universeInfo),
-          };
-        }),
-    ];
+      });
   }
 
   @Get('bars/:symbol')
