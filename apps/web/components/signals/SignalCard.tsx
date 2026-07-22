@@ -13,7 +13,7 @@ import { hasEntitlement } from "@/lib/entitlements";
 import { useExecutionStore } from "@/lib/store";
 import type { Signal } from "@/lib/types";
 import { inferSignalSide, strategyLabel } from "@/lib/strategy-labels";
-import { cn, formatNumber } from "@/lib/utils";
+import { formatNumber } from "@/lib/utils";
 
 interface SignalCardProps {
   signal: Signal;
@@ -86,20 +86,16 @@ export function SignalCard({
       <div className="p-5 pb-2">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <SymbolWithLogo symbol={signal.symbol} size="md" symbolClassName="text-lg" />
-              <span
-                className={cn(
-                  "inline-flex shrink-0 items-center rounded-md px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-white",
-                  isShort ? "bg-rose-600" : "bg-emerald-600",
-                )}
-              >
-                {isShort ? "SAT / SHORT" : "AL / LONG"}
-              </span>
-            </div>
+            <SymbolWithLogo symbol={signal.symbol} size="md" symbolClassName="text-lg" />
             <p className="mt-1 text-xs text-muted-foreground">{strategyLabel(signal.strategyId)}</p>
           </div>
           <div className="flex shrink-0 flex-col items-end gap-1">
+            <Badge
+              variant={isShort ? "destructive" : "success"}
+              className="font-mono"
+            >
+              {isShort ? "SAT / SHORT" : "AL / LONG"}
+            </Badge>
             <SignalConfidenceBadge confidence={signal.confidence} />
             <Badge variant={status.variant}>{status.label}</Badge>
           </div>
