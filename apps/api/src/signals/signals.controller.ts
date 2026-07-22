@@ -9,6 +9,7 @@ import { RequiresEntitlement } from '../common/decorators/requires-entitlement.d
 import { EntitlementGuard } from '../auth/guards/entitlement.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PrismaService } from '../prisma/prisma.service';
+import { inferSignalSide } from '../execution/risk-targets';
 
 /**
  * AI signals feed — Premium only. A Free/Basic user hitting this endpoint
@@ -65,21 +66,27 @@ export class SignalsController {
       orderBy: { generatedAt: 'desc' },
       take,
     });
-    return rows.map((s) => ({
-      id: s.id,
-      symbol: s.symbol,
-      strategyId: s.strategyId,
-      entryPrice: Number(s.entryPrice),
-      stopPrice: Number(s.stopPrice),
-      targetPrice: Number(s.targetPrice),
-      confidence: s.confidence,
-      generatedAt: s.generatedAt.toISOString(),
-      status: s.status,
-      resolvedAt: s.resolvedAt?.toISOString() ?? null,
-      resolvedPrice:
-        s.resolvedPrice === null ? null : Number(s.resolvedPrice),
-      realizedReturn: s.realizedReturn,
-      modelVersion: s.modelVersion,
-    }));
+    return rows.map((s) => {
+      const entryPrice = Number(s.entryPrice);
+      const stopPrice = Number(s.stopPrice);
+      const targetPrice = Number(s.targetPrice);
+      return {
+        id: s.id,
+        symbol: s.symbol,
+        strategyId: s.strategyId,
+        entryPrice,
+        stopPrice,
+        targetPrice,
+        side: inferSignalSide(entryPrice, stopPrice, targetPrice),
+        confidence: s.confidence,
+        generatedAt: s.generatedAt.toISOString(),
+        status: s.status,
+        resolvedAt: s.resolvedAt?.toISOString() ?? null,
+        resolvedPrice:
+          s.resolvedPrice === null ? null : Number(s.resolvedPrice),
+        realizedReturn: s.realizedReturn,
+        modelVersion: s.modelVersion,
+      };
+    });
   }
 }

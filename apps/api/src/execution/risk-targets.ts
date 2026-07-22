@@ -112,6 +112,10 @@ export function inferSignalSide(
   stop: number,
   target: number,
 ): 'buy' | 'sell' {
-  if (stop > entry && target < entry) return 'sell';
+  const e = Number(entry);
+  const s = Number(stop);
+  const t = Number(target);
+  if (![e, s, t].every((n) => Number.isFinite(n))) return 'buy';
+  if (s > e && t < e) return 'sell';
   return 'buy';
 }

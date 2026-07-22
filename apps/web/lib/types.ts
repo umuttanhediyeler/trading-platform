@@ -63,6 +63,8 @@ export interface Signal {
   entryPrice: number;
   stopPrice: number;
   targetPrice: number;
+  /** Present on newer API responses; inferred from barriers when missing. */
+  side?: "buy" | "sell";
   confidence: number;
   generatedAt: string;
   status: SignalStatus;

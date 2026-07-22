@@ -857,6 +857,7 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
           entryPrice: Number(signal.entryPrice),
           stopPrice: Number(signal.stopPrice),
           targetPrice: Number(signal.targetPrice),
+          side: tradeSide,
           confidence: signal.confidence,
           generatedAt: signal.generatedAt.toISOString(),
           status: signal.status,

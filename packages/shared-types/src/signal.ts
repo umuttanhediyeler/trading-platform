@@ -23,6 +23,8 @@ export interface Signal {
   entryPrice: number;
   stopPrice: number;
   targetPrice: number;
+  /** Long/short — inferred from barrier geometry when omitted. */
+  side?: "buy" | "sell";
   /** Calibrated model probability in the range [0, 1]. */
   confidence: number;
   /** ISO 8601 timestamp of when the signal was generated. */
