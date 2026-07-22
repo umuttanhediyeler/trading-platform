@@ -235,7 +235,8 @@ export function RiskSettingsForm({
               <span className="leading-relaxed">
                 Tam otomatik modun, yukarıdaki limitler içinde kalarak broker hesabımda gerçek
                 emirler oluşturabileceğini ve kill switch&apos;in otomasyonu anında
-                durduracağını anladım.
+                durduracağını anladım. Kill switch açıksa bu kayıt onu kapatıp full auto&apos;yu
+                yeniden etkinleştirir.
               </span>
             </label>
           ) : null}

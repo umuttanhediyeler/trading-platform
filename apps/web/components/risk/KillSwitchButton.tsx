@@ -16,6 +16,7 @@ export function KillSwitchButton({
 }) {
   const killSwitchActive = useExecutionStore((s) => s.killSwitchActive);
   const setKillSwitchActive = useExecutionStore((s) => s.setKillSwitchActive);
+  const setExecutionMode = useExecutionStore((s) => s.setExecutionMode);
   const [pending, setPending] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -41,14 +42,26 @@ export function KillSwitchButton({
 
   async function setActive(next: boolean) {
     if (!token) return;
-    const previous = killSwitchActive;
+    const previousKill = killSwitchActive;
+    const previousMode = useExecutionStore.getState().executionMode;
     setPending(true);
     setConfirming(false);
     setKillSwitchActive(next);
+    if (next) setExecutionMode("manual");
     try {
-      await apiClient.killSwitch(token, next);
+      const result = await apiClient.killSwitch(token, next);
+      setKillSwitchActive(Boolean(result.killSwitchActive));
+      if ("executionMode" in result && typeof result.executionMode === "string") {
+        const mode = result.executionMode;
+        if (mode === "manual" || mode === "one_click" || mode === "full_auto") {
+          setExecutionMode(mode);
+        }
+      } else if (next) {
+        setExecutionMode("manual");
+      }
     } catch {
-      setKillSwitchActive(previous);
+      setKillSwitchActive(previousKill);
+      setExecutionMode(previousMode);
     } finally {
       setPending(false);
     }
@@ -58,7 +71,9 @@ export function KillSwitchButton({
     <div ref={containerRef} className="relative">
       <Button
         type="button"
-        variant={killSwitchActive ? "success" : "destructive"}
+        // ON = danger (red). OFF = muted outline. Never paint "ON" green —
+        // that read as "safe/protection ok" and confused refresh state.
+        variant={killSwitchActive ? "destructive" : "outline"}
         size="sm"
         className={cn("font-semibold tracking-wide", className)}
         onClick={() => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { Sidebar, MobileNav } from "./Sidebar";
 import { Topbar } from "./Topbar";
 import { useExecutionStore } from "@/lib/store";
@@ -26,8 +26,11 @@ export function AppShell({
   const setPlanTier = useExecutionStore((s) => s.setPlanTier);
   const setExecutionMode = useExecutionStore((s) => s.setExecutionMode);
   const setKillSwitchActive = useExecutionStore((s) => s.setKillSwitchActive);
+  /** After /users/me syncs, ignore stale NextAuth session props. */
+  const liveSynced = useRef(false);
 
   useEffect(() => {
+    if (liveSynced.current) return;
     if (planTier) setPlanTier(planTier);
     if (executionMode) setExecutionMode(executionMode);
     if (typeof killSwitchActive === "boolean") setKillSwitchActive(killSwitchActive);
@@ -43,6 +46,7 @@ export function AppShell({
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
+    liveSynced.current = false;
     apiClient
       .me(token)
       .then((profile) => {
@@ -59,6 +63,7 @@ export function AppShell({
           setExecutionMode(profile.executionMode);
         }
         setKillSwitchActive(Boolean(profile.riskSettings?.killSwitchActive));
+        liveSynced.current = true;
       })
       .catch(() => undefined);
     return () => {
@@ -70,12 +75,13 @@ export function AppShell({
     connectSocket(token);
     const off = onWsEvent("execution:kill-switch-triggered", () => {
       setKillSwitchActive(true);
+      setExecutionMode("manual");
     });
     return () => {
       off();
       disconnectSocket();
     };
-  }, [token, setKillSwitchActive]);
+  }, [token, setKillSwitchActive, setExecutionMode]);
 
   return (
     <div className="flex min-h-screen bg-background">

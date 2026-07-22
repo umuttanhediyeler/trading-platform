@@ -63,7 +63,16 @@ export class UsersController {
         status: user.subscription?.status ?? 'active',
         currentPeriodEnd: user.subscription?.currentPeriodEnd ?? null,
       },
-      riskSettings: user.riskSettings,
+      riskSettings: user.riskSettings
+        ? {
+            maxDailyTrades: user.riskSettings.maxDailyTrades,
+            maxDailyLossPercent: user.riskSettings.maxDailyLossPercent,
+            maxRiskPerTrade: user.riskSettings.maxRiskPerTrade,
+            killSwitchActive: user.riskSettings.killSwitchActive,
+            killSwitchReason: user.riskSettings.killSwitchReason,
+            killSwitchAt: user.riskSettings.killSwitchAt,
+          }
+        : null,
       broker: user.brokerLink,
     };
   }

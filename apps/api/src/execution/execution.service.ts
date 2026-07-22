@@ -51,10 +51,11 @@ export class ExecutionService {
           'Configure and review risk settings before enabling full_auto',
         );
       }
+      // Explicit full_auto + risk ack means the user wants automation back —
+      // clear a previously tripped kill switch instead of silently failing
+      // and leaving the UI stuck on manual after refresh.
       if (settings.killSwitchActive) {
-        throw new ForbiddenException(
-          'Kill switch is active — deactivate it before enabling full_auto',
-        );
+        await this.deactivateKillSwitch(userId);
       }
       if (!brokerLink) {
         throw new BadRequestException(
@@ -76,7 +77,14 @@ export class ExecutionService {
       where: { id: userId },
       data: { executionMode: mode },
     });
-    return { executionMode: user.executionMode };
+    const risk = await this.prisma.riskSettings.findUnique({
+      where: { userId },
+      select: { killSwitchActive: true },
+    });
+    return {
+      executionMode: user.executionMode,
+      killSwitchActive: Boolean(risk?.killSwitchActive),
+    };
   }
 
   async activateKillSwitch(userId: string, reason?: string) {
@@ -84,15 +92,26 @@ export class ExecutionService {
       userId,
       reason ?? 'Manually activated by user',
     );
-    return { killSwitchActive: true, executionMode: 'manual' };
+    return { killSwitchActive: true, executionMode: 'manual' as const };
   }
 
   async deactivateKillSwitch(userId: string) {
     await this.prisma.riskSettings.upsert({
       where: { userId },
-      update: { killSwitchActive: false },
+      update: {
+        killSwitchActive: false,
+        killSwitchReason: null,
+        killSwitchAt: null,
+      },
       create: { userId, killSwitchActive: false },
     });
-    return { killSwitchActive: false };
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { executionMode: true },
+    });
+    return {
+      killSwitchActive: false,
+      executionMode: user?.executionMode ?? 'manual',
+    };
   }
 }

@@ -249,6 +249,7 @@ export const apiClient = {
         maxDailyLossPercent: number;
         maxRiskPerTrade: number;
         killSwitchActive: boolean;
+        killSwitchReason?: string | null;
       } | null;
       broker: {
         broker: BrokerName;
@@ -365,7 +366,7 @@ export const apiClient = {
     mode: "manual" | "one_click" | "full_auto",
     riskAcknowledged?: boolean,
   ) =>
-    request<{ executionMode: string }>("/execution/mode", {
+    request<{ executionMode: string; killSwitchActive?: boolean }>("/execution/mode", {
       method: "POST",
       token,
       body: { mode, riskAcknowledged },
@@ -373,15 +374,21 @@ export const apiClient = {
 
   killSwitch: (token: string, active: boolean) =>
     active
-      ? request<{ killSwitchActive: boolean }>("/execution/kill-switch", {
-          method: "POST",
-          token,
-          body: { reason: "manual" },
-        })
-      : request<{ killSwitchActive: boolean }>("/execution/kill-switch", {
-          method: "DELETE",
-          token,
-        }),
+      ? request<{ killSwitchActive: boolean; executionMode?: string }>(
+          "/execution/kill-switch",
+          {
+            method: "POST",
+            token,
+            body: { reason: "manual" },
+          },
+        )
+      : request<{ killSwitchActive: boolean; executionMode?: string }>(
+          "/execution/kill-switch",
+          {
+            method: "DELETE",
+            token,
+          },
+        ),
 
   updateRisk: (token: string, settings: Partial<RiskSettings>) =>
     request<RiskSettings>("/users/me/risk", {

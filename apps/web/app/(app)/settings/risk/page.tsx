@@ -8,6 +8,7 @@ import { FadeIn } from "@/components/reactbits/FadeIn";
 import { SpotlightCard } from "@/components/reactbits/SpotlightCard";
 import { Badge } from "@/components/ui/badge";
 import { apiClient } from "@/lib/api-client";
+import { useExecutionStore } from "@/lib/store";
 import type { RiskSettings } from "@/lib/types";
 
 const DEFENSE_LINES = [
@@ -34,9 +35,12 @@ const DEFENSE_LINES = [
 export default function RiskSettingsPage() {
   const { data: session } = useSession();
   const token = session?.accessToken;
+  const setStoreMode = useExecutionStore((s) => s.setExecutionMode);
+  const setStoreKill = useExecutionStore((s) => s.setKillSwitchActive);
   const [initial, setInitial] = useState<Partial<RiskSettings> | undefined>();
   const [loading, setLoading] = useState(true);
   const [killSwitchActive, setKillSwitchActive] = useState(false);
+  const [killSwitchReason, setKillSwitchReason] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -50,12 +54,22 @@ export default function RiskSettingsPage() {
       try {
         const me = await apiClient.me(token);
         if (cancelled) return;
-        setKillSwitchActive(Boolean(me.riskSettings?.killSwitchActive));
+        const killOn = Boolean(me.riskSettings?.killSwitchActive);
+        setKillSwitchActive(killOn);
+        setKillSwitchReason(me.riskSettings?.killSwitchReason ?? null);
+        setStoreKill(killOn);
+        if (
+          me.executionMode === "manual" ||
+          me.executionMode === "one_click" ||
+          me.executionMode === "full_auto"
+        ) {
+          setStoreMode(me.executionMode);
+        }
         setInitial({
           maxDailyTrades: me.riskSettings?.maxDailyTrades,
           maxDailyLossPercent: me.riskSettings?.maxDailyLossPercent,
           maxRiskPerTrade: me.riskSettings?.maxRiskPerTrade,
-          killSwitchActive: Boolean(me.riskSettings?.killSwitchActive),
+          killSwitchActive: killOn,
           executionMode: me.executionMode as RiskSettings["executionMode"],
         });
       } catch (err) {
@@ -67,7 +81,7 @@ export default function RiskSettingsPage() {
     return () => {
       cancelled = true;
     };
-  }, [token]);
+  }, [token, setStoreKill, setStoreMode]);
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -89,6 +103,24 @@ export default function RiskSettingsPage() {
           </Badge>
         </div>
       </FadeIn>
+
+      {killSwitchActive ? (
+        <FadeIn>
+          <div
+            role="alert"
+            className="rounded-2xl border border-destructive/40 bg-destructive/10 px-5 py-4 text-sm"
+          >
+            <p className="font-semibold text-destructive">
+              Kill switch açık — hesap manuel moda alındı
+            </p>
+            <p className="mt-1.5 text-muted-foreground">
+              {killSwitchReason
+                ? `Sebep: ${killSwitchReason}`
+                : "Otomasyon durduruldu. Full auto’yu tekrar kaydederseniz kill switch kapanır ve otomasyon yeniden açılır."}
+            </p>
+          </div>
+        </FadeIn>
+      ) : null}
 
       <FadeIn delay={60}>
         <div className="rounded-2xl border border-border bg-card/80 p-6 backdrop-blur">
@@ -135,14 +167,20 @@ export default function RiskSettingsPage() {
           loading={loading}
           onSave={async (settings) => {
             if (!token) throw new Error("Oturum gerekli — tekrar giriş yapın.");
-            // Mode first: if full_auto is rejected (broker/plan), keep numbers unchanged
-            // only when mode succeeds we also persist numeric limits.
             try {
-              await apiClient.setExecutionMode(
+              const modeResult = await apiClient.setExecutionMode(
                 token,
                 settings.executionMode,
                 settings.executionMode === "full_auto",
               );
+              setStoreMode(
+                modeResult.executionMode as RiskSettings["executionMode"],
+              );
+              if (typeof modeResult.killSwitchActive === "boolean") {
+                setStoreKill(modeResult.killSwitchActive);
+                setKillSwitchActive(modeResult.killSwitchActive);
+                if (!modeResult.killSwitchActive) setKillSwitchReason(null);
+              }
             } catch (err) {
               const msg = err instanceof Error ? err.message : "İşlem modu kaydedilemedi";
               throw new Error(
@@ -150,8 +188,23 @@ export default function RiskSettingsPage() {
               );
             }
             await apiClient.updateRisk(token, settings);
-            setInitial(settings);
-            setKillSwitchActive(Boolean(settings.killSwitchActive));
+            const me = await apiClient.me(token);
+            const killOn = Boolean(me.riskSettings?.killSwitchActive);
+            setKillSwitchActive(killOn);
+            setKillSwitchReason(me.riskSettings?.killSwitchReason ?? null);
+            setStoreKill(killOn);
+            if (
+              me.executionMode === "manual" ||
+              me.executionMode === "one_click" ||
+              me.executionMode === "full_auto"
+            ) {
+              setStoreMode(me.executionMode);
+            }
+            setInitial({
+              ...settings,
+              killSwitchActive: killOn,
+              executionMode: me.executionMode as RiskSettings["executionMode"],
+            });
           }}
         />
       </FadeIn>
