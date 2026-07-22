@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 import { computePositionSize } from './position-sizing';
-import { computeRiskTargets } from './risk-targets';
+import { computeRiskTargets, pickStrategyId } from './risk-targets';
 
 describe('position-sizing', () => {
   it('sizes from risk budget without arbitrary share cap', () => {
@@ -43,5 +43,13 @@ describe('risk-targets', () => {
     expect(aggressive.takeProfitPercent).toBeGreaterThan(
       conservative.takeProfitPercent,
     );
+  });
+
+  it('picks diversified strategies from regime + confidence', () => {
+    expect(pickStrategyId('trend', 0.8)).toBe('tb_momentum');
+    expect(pickStrategyId('range', 0.65)).toBe('tb_mean_revert');
+    expect(pickStrategyId('high_vol', 0.6)).toBe('tb_tight_scalp');
+    expect(pickStrategyId('high_vol', 0.8)).toBe('tb_wide_swing');
+    expect(pickStrategyId('unknown', 0.66)).toBe('tb_balanced');
   });
 });

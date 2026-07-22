@@ -17,7 +17,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { UNIVERSE } from '../market-data/universe';
 import { SignalUniverseService } from '../market-data/signal-universe.service';
 import { computePositionSize } from '../execution/position-sizing';
-import { computeRiskTargets, STRATEGY_RISK } from '../execution/risk-targets';
+import {
+  computeRiskTargets,
+  pickStrategyId,
+  STRATEGY_RISK,
+} from '../execution/risk-targets';
 import {
   MARKET_DATA_PROVIDER,
   MarketDataProvider,
@@ -729,24 +733,24 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
    * users, so promotion gates can compare live challenger vs champion.
    */
   async generateSignals(minConfidence = 0.58) {
-    const selections = await this.prisma.dailyStrategySelection.findMany({
-      orderBy: [{ date: 'desc' }, { rank: 'asc' }],
-      take: 5,
-    });
-    const strategyId = selections[0]?.strategyId ?? 'tb_balanced';
-    const risk = STRATEGY_RISK[strategyId] ?? STRATEGY_RISK.tb_balanced;
     const signalUniverse = await this.signalUniverse.build();
     const shadowCandidatesByRegime = await this.loadShadowCandidates();
     let predictions = 0;
     let signalsCreated = 0;
     let shadowPredictions = 0;
     let shadowEvaluations = 0;
+    const usedStrategies = new Map<string, number>();
 
     for (const symbol of signalUniverse) {
       try {
         const bars = await this.loadBars(symbol, 120);
         if (bars.length < 60) continue;
         const prediction = await this.predict(symbol, bars);
+        const strategyId = pickStrategyId(
+          prediction.regime,
+          prediction.confidence,
+        );
+        const risk = STRATEGY_RISK[strategyId] ?? STRATEGY_RISK.tb_balanced;
         const storedPrediction = await this.prisma.prediction.create({
           data: {
             symbol,
@@ -821,6 +825,7 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
         });
         const stop = signalTargets.stopPrice;
         const target = signalTargets.targetPrice;
+        usedStrategies.set(strategyId, (usedStrategies.get(strategyId) ?? 0) + 1);
         const existing = await this.prisma.signal.findFirst({
           where: {
             symbol,
@@ -901,7 +906,7 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
             .catch(() => undefined);
         }
         this.logger.log(
-          `Signal created ${tradeSide} ${symbol} conf=${prediction.confidence.toFixed(2)}`,
+          `Signal created ${tradeSide} ${symbol} strategy=${strategyId} conf=${prediction.confidence.toFixed(2)}`,
         );
       } catch (err) {
         this.logger.warn(
@@ -909,7 +914,42 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
         );
       }
     }
+
+    if (usedStrategies.size > 0) {
+      const summary = [...usedStrategies.entries()]
+        .map(([id, count]) => `${id}=${count}`)
+        .join(' ');
+      this.logger.log(`Signal strategies this run: ${summary}`);
+      await this.persistDailyStrategySelections(usedStrategies).catch((err) =>
+        this.logger.warn(
+          `Could not persist daily strategy selections: ${(err as Error).message}`,
+        ),
+      );
+    }
+
     return { predictions, signalsCreated, shadowPredictions, shadowEvaluations };
+  }
+
+  /** Audit trail of which barrier profiles were used today. */
+  private async persistDailyStrategySelections(
+    used: Map<string, number>,
+  ): Promise<void> {
+    const day = new Date();
+    day.setUTCHours(0, 0, 0, 0);
+    const ranked = [...used.entries()].sort((a, b) => b[1] - a[1]);
+    for (let rank = 0; rank < ranked.length; rank += 1) {
+      const [strategyId] = ranked[rank];
+      await this.prisma.dailyStrategySelection.upsert({
+        where: { date_rank: { date: day, rank: rank + 1 } },
+        create: {
+          date: day,
+          rank: rank + 1,
+          strategyId,
+          regime: 'mixed',
+        },
+        update: { strategyId, regime: 'mixed' },
+      });
+    }
   }
 
   private async schedule(

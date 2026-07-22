@@ -35,12 +35,17 @@ export default function RiskSettingsPage() {
   const { data: session } = useSession();
   const token = session?.accessToken;
   const [initial, setInitial] = useState<Partial<RiskSettings> | undefined>();
+  const [loading, setLoading] = useState(true);
   const [killSwitchActive, setKillSwitchActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!token) return;
+    if (!token) {
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
+    setLoading(true);
     (async () => {
       try {
         const me = await apiClient.me(token);
@@ -55,6 +60,8 @@ export default function RiskSettingsPage() {
         });
       } catch (err) {
         if (!cancelled) setError((err as Error).message);
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     })();
     return () => {
@@ -124,16 +131,27 @@ export default function RiskSettingsPage() {
 
       <FadeIn delay={180}>
         <RiskSettingsForm
-          key={JSON.stringify(initial ?? {})}
           initial={initial}
+          loading={loading}
           onSave={async (settings) => {
             if (!token) throw new Error("Oturum gerekli — tekrar giriş yapın.");
+            // Mode first: if full_auto is rejected (broker/plan), keep numbers unchanged
+            // only when mode succeeds we also persist numeric limits.
+            try {
+              await apiClient.setExecutionMode(
+                token,
+                settings.executionMode,
+                settings.executionMode === "full_auto",
+              );
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : "İşlem modu kaydedilemedi";
+              throw new Error(
+                `${msg}. Broker bağlantısı ve Premium plan gerekli olabilir; limitler henüz kaydedilmedi.`,
+              );
+            }
             await apiClient.updateRisk(token, settings);
-            await apiClient.setExecutionMode(
-              token,
-              settings.executionMode,
-              settings.executionMode === "full_auto",
-            );
+            setInitial(settings);
+            setKillSwitchActive(Boolean(settings.killSwitchActive));
           }}
         />
       </FadeIn>

@@ -7,7 +7,7 @@ import { StockLogo } from "@/components/shared/StockLogo";
 import { cn } from "@/lib/utils";
 
 const MAX_VISIBLE_RESULTS = 60;
-const REMOTE_SEARCH_MIN = 2;
+const REMOTE_SEARCH_MIN = 1;
 
 interface SymbolMultiPickerProps {
   symbols: MarketSymbol[];
@@ -83,27 +83,28 @@ export function SymbolMultiPicker({
     const rank = (item: MarketSymbol) =>
       Number(item.inWatchlist) * 2 + Number(item.inUniverse ?? false);
 
-    const catalog = new Map<string, MarketSymbol>();
-    for (const item of symbols) catalog.set(item.symbol.toUpperCase(), item);
-    for (const item of remoteHits) catalog.set(item.symbol.toUpperCase(), item);
-    const all = [...catalog.values()];
-
-    let pool = all;
+    // While typing: prefer full Alpaca search hits so the list grows from the catalog.
     if (needle) {
-      pool = all.filter(
+      const pool = remoteHits.length > 0 ? remoteHits : symbols.filter(
         (item) =>
           item.symbol.toLowerCase().includes(needle) ||
           item.name.toLowerCase().includes(needle),
       );
-    } else {
-      pool = [...all]
-        .filter((item) => item.inWatchlist || item.inUniverse)
-        .sort((a, b) => rank(b) - rank(a) || a.symbol.localeCompare(b.symbol));
+      return {
+        items: pool.slice(0, MAX_VISIBLE_RESULTS),
+        total: pool.length,
+        searching: true,
+      };
     }
+
+    const pool = [...symbols]
+      .filter((item) => item.inWatchlist || item.inUniverse)
+      .sort((a, b) => rank(b) - rank(a) || a.symbol.localeCompare(b.symbol));
 
     return {
       items: pool.slice(0, MAX_VISIBLE_RESULTS),
       total: pool.length,
+      searching: false,
     };
   }, [debouncedQuery, remoteHits, symbols]);
 
@@ -231,8 +232,8 @@ export function SymbolMultiPicker({
             <span>
               {query.trim()
                 ? remoteLoading
-                  ? "Aranıyor…"
-                  : `${results.total} sonuç`
+                  ? "Alpaca kataloğu aranıyor…"
+                  : `${results.total} sonuç · tüm hisseler`
                 : "Önerilen hisseler"}
             </span>
             <span className="normal-case tracking-normal text-muted-foreground/80">

@@ -18,6 +18,7 @@ describe('MlBridgeService signal gates', () => {
     const prisma = {
       dailyStrategySelection: {
         findMany: jest.fn().mockResolvedValue([{ strategyId: 'tb_balanced' }]),
+        upsert: jest.fn().mockResolvedValue({}),
       },
       prediction: {
         create: jest.fn().mockImplementation(({ data }) => ({

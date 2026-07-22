@@ -69,6 +69,7 @@ export class MarketAssetsService {
 
       cachedAssets = assets;
       cacheTimestamp = Date.now();
+      this.logger.log(`Cached ${assets.length} Alpaca US equity assets`);
       return assets;
     } catch (error) {
       this.logger.warn(
@@ -78,10 +79,9 @@ export class MarketAssetsService {
     }
   }
 
-  /** Fast symbol→name lookup without shipping the full asset list. */
-  async getNameMap(): Promise<Map<string, string>> {
-    const assets = await this.getAssets().catch(() => this.fallbackAssets());
-    return new Map(assets.map((asset) => [asset.symbol, asset.name]));
+  /** Fire-and-forget warm of the full catalog (safe to call repeatedly). */
+  warmCache(): void {
+    void this.getAssets().catch(() => undefined);
   }
 
   /** Instant map from in-memory cache only (empty if not warmed yet). */
@@ -95,24 +95,34 @@ export class MarketAssetsService {
   }
 
   /**
-   * Search Alpaca (or fallback) assets by ticker/name. Used when the picker
-   * query is outside the curated ~500 scan universe.
+   * Search the full Alpaca catalog by ticker/name. Prefix matches on symbol
+   * rank first so typeahead feels progressive (“A” → “AA” → “AAPL”).
    */
-  async searchAssets(query: string, limit = 80): Promise<MarketAsset[]> {
+  async searchAssets(query: string, limit = 100): Promise<MarketAsset[]> {
     const needle = query.trim().toLowerCase();
     if (!needle) return [];
     const assets = await this.getAssets().catch(() => this.fallbackAssets());
-    const matched: MarketAsset[] = [];
+
+    const scored: Array<{ asset: MarketAsset; score: number }> = [];
     for (const asset of assets) {
-      if (
-        asset.symbol.toLowerCase().includes(needle) ||
-        asset.name.toLowerCase().includes(needle)
-      ) {
-        matched.push(asset);
-        if (matched.length >= limit) break;
-      }
+      const symbol = asset.symbol.toLowerCase();
+      const name = asset.name.toLowerCase();
+      let score = -1;
+      if (symbol === needle) score = 300;
+      else if (symbol.startsWith(needle)) score = 200 - Math.min(symbol.length, 50);
+      else if (symbol.includes(needle)) score = 100;
+      else if (name.startsWith(needle)) score = 80;
+      else if (name.includes(needle)) score = 40;
+      if (score >= 0) scored.push({ asset, score });
     }
-    return matched;
+
+    return scored
+      .sort(
+        (a, b) =>
+          b.score - a.score || a.asset.symbol.localeCompare(b.asset.symbol),
+      )
+      .slice(0, limit)
+      .map(({ asset }) => asset);
   }
 
   private fallbackAssets(): MarketAsset[] {

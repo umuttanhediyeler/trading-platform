@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -25,19 +25,44 @@ const MODE_EXPLANATIONS: Record<ExecutionMode, string> = {
     "Onaylı sinyaller, aşağıdaki limitler içinde kaldığı sürece otomatik olarak emre dönüşür.",
 };
 
+function clampNumber(value: number, min: number, max: number, fallback: number) {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
+}
+
 export function RiskSettingsForm({
   initial,
+  loading = false,
   onSave,
 }: {
   initial?: Partial<RiskSettings>;
+  /** When true, form waits for server values before allowing edits. */
+  loading?: boolean;
   onSave?: (settings: RiskSettings) => void | Promise<void>;
 }) {
   const setExecutionMode = useExecutionStore((s) => s.setExecutionMode);
   const [settings, setSettings] = useState<RiskSettings>({ ...DEFAULTS, ...initial });
+  const [hydrated, setHydrated] = useState(Boolean(initial));
+  const dirtyRef = useRef(false);
   const [ack, setAck] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+
+  // Apply server values once — never overwrite while the user is editing.
+  useEffect(() => {
+    if (!initial || dirtyRef.current) return;
+    setSettings({ ...DEFAULTS, ...initial });
+    setHydrated(true);
+    if (initial.executionMode === "full_auto") setAck(true);
+  }, [initial]);
+
+  function patch(partial: Partial<RiskSettings>) {
+    dirtyRef.current = true;
+    setSaved(false);
+    setMessage(null);
+    setSettings((current) => ({ ...current, ...partial }));
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -46,6 +71,25 @@ export function RiskSettingsForm({
       setMessage("Tam otomatik mod için risk onayı kutusunu işaretlemeniz gerekiyor.");
       return;
     }
+
+    const normalized: RiskSettings = {
+      ...settings,
+      maxDailyTrades: clampNumber(settings.maxDailyTrades, 1, 50, DEFAULTS.maxDailyTrades),
+      maxDailyLossPercent: clampNumber(
+        settings.maxDailyLossPercent,
+        0.5,
+        20,
+        DEFAULTS.maxDailyLossPercent,
+      ),
+      maxRiskPerTrade: clampNumber(
+        settings.maxRiskPerTrade,
+        0.25,
+        5,
+        DEFAULTS.maxRiskPerTrade,
+      ),
+    };
+    setSettings(normalized);
+
     setSaving(true);
     setMessage(null);
     setSaved(false);
@@ -53,16 +97,25 @@ export function RiskSettingsForm({
       if (!onSave) {
         setMessage("Kayıt bağlantısı yok — ayarlar yalnızca bu tarayıcı oturumunda tutuldu.");
       } else {
-        await onSave(settings);
+        await onSave(normalized);
         setSaved(true);
         setMessage("Risk ayarları kaydedildi.");
+        dirtyRef.current = false;
       }
-      setExecutionMode(settings.executionMode);
+      setExecutionMode(normalized.executionMode);
     } catch (err) {
       setMessage((err as Error).message || "Risk ayarları kaydedilemedi.");
     } finally {
       setSaving(false);
     }
+  }
+
+  if (loading && !hydrated) {
+    return (
+      <div className="rounded-2xl border border-border bg-card/80 p-6 text-sm text-muted-foreground backdrop-blur">
+        Risk ayarları yükleniyor…
+      </div>
+    );
   }
 
   return (
@@ -96,7 +149,7 @@ export function RiskSettingsForm({
               className="font-mono"
               value={settings.maxDailyTrades}
               onChange={(e) =>
-                setSettings((s) => ({ ...s, maxDailyTrades: Number(e.target.value) }))
+                patch({ maxDailyTrades: Number(e.target.value) })
               }
             />
           </AdornedInput>
@@ -118,10 +171,7 @@ export function RiskSettingsForm({
               className="font-mono"
               value={settings.maxDailyLossPercent}
               onChange={(e) =>
-                setSettings((s) => ({
-                  ...s,
-                  maxDailyLossPercent: Number(e.target.value),
-                }))
+                patch({ maxDailyLossPercent: Number(e.target.value) })
               }
             />
           </AdornedInput>
@@ -143,7 +193,7 @@ export function RiskSettingsForm({
               className="font-mono"
               value={settings.maxRiskPerTrade}
               onChange={(e) =>
-                setSettings((s) => ({ ...s, maxRiskPerTrade: Number(e.target.value) }))
+                patch({ maxRiskPerTrade: Number(e.target.value) })
               }
             />
           </AdornedInput>
@@ -158,12 +208,11 @@ export function RiskSettingsForm({
           <Select
             id="execution-mode"
             value={settings.executionMode}
-            onChange={(e) =>
-              setSettings((s) => ({
-                ...s,
-                executionMode: e.target.value as ExecutionMode,
-              }))
-            }
+            onChange={(e) => {
+              const mode = e.target.value as ExecutionMode;
+              patch({ executionMode: mode });
+              if (mode !== "full_auto") setAck(false);
+            }}
           >
             <option value="manual">Manuel — sadece sinyal göster</option>
             <option value="one_click">Tek tık — onayla ve gönder</option>
@@ -178,7 +227,10 @@ export function RiskSettingsForm({
                 type="checkbox"
                 className="mt-1"
                 checked={ack}
-                onChange={(e) => setAck(e.target.checked)}
+                onChange={(e) => {
+                  dirtyRef.current = true;
+                  setAck(e.target.checked);
+                }}
               />
               <span className="leading-relaxed">
                 Tam otomatik modun, yukarıdaki limitler içinde kalarak broker hesabımda gerçek
@@ -189,12 +241,15 @@ export function RiskSettingsForm({
           ) : null}
 
           {message ? (
-            <p className={`text-sm ${saved ? "text-success" : "text-muted-foreground"}`}>
+            <p
+              className={`text-sm ${saved ? "text-success" : "text-destructive"}`}
+              role={saved ? "status" : "alert"}
+            >
               {message}
             </p>
           ) : null}
 
-          <Button type="submit" disabled={saving}>
+          <Button type="submit" disabled={saving || (loading && !hydrated)}>
             {saving ? "Kaydediliyor…" : "Risk ayarlarını kaydet"}
           </Button>
         </div>

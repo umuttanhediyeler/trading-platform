@@ -42,9 +42,10 @@ export class MarketDataController {
   ) {}
 
   /**
-   * Symbol picker catalog. Returns the curated scan universe (~500) by default
-   * so watchlist UI stays fast. Optional `q` searches the full Alpaca asset
-   * cache for tickers outside that set without shipping 10k+ rows every load.
+   * Symbol picker catalog.
+   * - No `q`: curated ~500 scan universe (fast first paint).
+   * - With `q`: full Alpaca US equity catalog filtered by ticker/name
+   *   (typeahead grows as the user types — not preloaded into the client).
    */
   @Get('symbols')
   async symbols(@Req() req: Request, @Query('q') q?: string) {
@@ -63,21 +64,27 @@ export class MarketDataController {
     );
     const needle = q?.trim().toLowerCase() ?? '';
 
-    // Warm Alpaca names in the background; never block the picker on a 10k dump.
-    void this.marketAssets.getAssets().catch(() => undefined);
+    // Warm full Alpaca catalog in the background for subsequent searches.
+    void this.marketAssets.warmCache();
 
-    let nameBySymbol = new Map<string, string>();
-    let extraSymbols: string[] = [];
     if (needle) {
-      const searched = await this.marketAssets.searchAssets(needle, 80);
-      nameBySymbol = new Map(searched.map((a) => [a.symbol, a.name]));
-      extraSymbols = searched.map((a) => a.symbol);
-    } else {
-      nameBySymbol = await this.marketAssets.getCachedNameMap();
+      const searched = await this.marketAssets.searchAssets(needle, 100);
+      return searched.map((asset) => {
+        const universeInfo = universeBySymbol.get(asset.symbol);
+        return {
+          symbol: asset.symbol,
+          name: asset.name,
+          ...(asset.exchange ? { exchange: asset.exchange } : {}),
+          ...(universeInfo?.sector ? { sector: universeInfo.sector } : {}),
+          inWatchlist: watchlistSymbols.has(asset.symbol),
+          inUniverse: Boolean(universeInfo),
+        };
+      });
     }
 
+    const nameBySymbol = await this.marketAssets.getCachedNameMap();
     const merged = new Set<string>([
-      ...(needle ? extraSymbols : SCAN_UNIVERSE),
+      ...SCAN_UNIVERSE,
       ...watchlistSymbols,
       ...UNIVERSE_INFO.map((info) => info.symbol),
     ]);

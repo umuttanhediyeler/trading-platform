@@ -10,6 +10,36 @@ export const STRATEGY_RISK: Record<
   tb_mean_revert: { stopLossPercent: 0.015, takeProfitPercent: 0.015 },
 };
 
+/**
+ * Pick a trade-barrier profile from model regime + confidence so signals are
+ * not stuck on a single default (`tb_balanced`).
+ */
+export function pickStrategyId(
+  regime: string,
+  confidence: number,
+): keyof typeof STRATEGY_RISK {
+  const conf = Number.isFinite(confidence) ? confidence : 0.6;
+  const normalized = regime.trim().toLowerCase();
+
+  if (normalized === 'high_vol' || normalized === 'high-vol') {
+    return conf >= 0.72 ? 'tb_wide_swing' : 'tb_tight_scalp';
+  }
+  if (normalized === 'trend' || normalized === 'trending') {
+    return conf >= 0.7 ? 'tb_momentum' : 'tb_balanced';
+  }
+  if (
+    normalized === 'range' ||
+    normalized === 'ranging' ||
+    normalized === 'mean_revert' ||
+    normalized === 'mean-reversion'
+  ) {
+    return 'tb_mean_revert';
+  }
+  if (conf >= 0.75) return 'tb_momentum';
+  if (conf < 0.62) return 'tb_tight_scalp';
+  return 'tb_balanced';
+}
+
 export interface RiskTargetInput {
   entry: number;
   strategyId: string;
