@@ -69,34 +69,13 @@ export default function ModelsPage() {
         setNotice(
           "Sinyal üretimi kuyruğa alındı. Birkaç dakika içinde tamamlanır; sayfayı yenileyerek sonuçları kontrol edin.",
         );
+        void load();
       } else {
         setNotice(
           `${result.predictions ?? 0} tahmin kaydedildi, ${result.signalsCreated ?? 0} yeni sinyal oluşturuldu.`,
         );
+        await load();
       }
-      await load();
-    } catch (err) {
-      setError(networkErrorMessage(err, "Sinyal üretimi başarısız"));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function resolve() {
-    if (!session?.accessToken) return;
-    setBusy("resolve");
-    setError(null);
-    setNotice(null);
-    try {
-      const result = await apiClient.resolveSignals(session.accessToken);
-      setNotice(`${result.resolved} açık sinyal güncel fiyatlarla çözümlendi.`);
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Sinyaller çözümlenemedi");
-    } finally {
-      setBusy(null);
-    }
-  }
 
   async function runLifecycle() {
     if (!session?.accessToken) return;

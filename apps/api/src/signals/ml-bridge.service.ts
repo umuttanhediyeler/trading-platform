@@ -335,6 +335,11 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
           }
           return;
         }
+        if (job.name === 'manual-resolve') {
+          await this.resolveOpenSignals();
+          await this.resolveShadowEvaluations();
+          return;
+        }
         await this.resolveOpenSignals();
         await this.resolveShadowEvaluations();
         await this.generateSignals();
@@ -471,6 +476,28 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
       { removeOnComplete: 30, removeOnFail: 30 },
     );
     this.logger.log(`Manual signal generation queued job=${job.id}`);
+    return { queued: true, jobId: job.id };
+  }
+
+  /**
+   * Queue barrier resolution. Inline resolve walks every open signal + shadow
+   * row against market data and routinely exceeds the web client's 12s budget.
+   */
+  async enqueueResolveSignals(): Promise<{
+    queued: true;
+    jobId: string | undefined;
+  }> {
+    if (!this.signalQueue) {
+      await this.resolveOpenSignals();
+      await this.resolveShadowEvaluations();
+      return { queued: true, jobId: undefined };
+    }
+    const job = await this.signalQueue.add(
+      'manual-resolve',
+      { source: 'manual' },
+      { removeOnComplete: 30, removeOnFail: 30 },
+    );
+    this.logger.log(`Manual signal resolve queued job=${job.id}`);
     return { queued: true, jobId: job.id };
   }
 

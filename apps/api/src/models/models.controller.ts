@@ -255,11 +255,9 @@ export class ModelsController implements OnModuleInit {
   }
 
   @Post('resolve-signals')
-  async resolve() {
-    const signals = await this.ml.resolveOpenSignals();
-    const shadow = await this.ml.resolveShadowEvaluations();
+  resolve() {
     this.listCache = null;
-    return { ...signals, shadowResolved: shadow.resolved };
+    return this.ml.enqueueResolveSignals();
   }
 
   @Post(':version/promote')

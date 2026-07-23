@@ -295,12 +295,19 @@ export const apiClient = {
     }>("/models/generate-signals", {
       method: "POST",
       token,
+      timeoutMs: 20_000,
     }),
 
   resolveSignals: (token: string) =>
-    request<{ resolved: number; shadowResolved: number }>("/models/resolve-signals", {
+    request<{
+      queued?: boolean;
+      jobId?: string;
+      resolved?: number;
+      shadowResolved?: number;
+    }>("/models/resolve-signals", {
       method: "POST",
       token,
+      timeoutMs: 20_000,
     }),
 
   runModelLifecycle: (token: string) =>
