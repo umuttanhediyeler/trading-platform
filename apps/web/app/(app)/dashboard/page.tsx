@@ -88,7 +88,7 @@ export default function DashboardPage() {
     function mergeRows(prev: ScanRow[], next: ScanRow[]) {
       const bySymbol = new Map(prev.map((r) => [r.symbol, r]));
       for (const row of next) bySymbol.set(row.symbol, row);
-      return [...bySymbol.values()].sort(
+      return Array.from(bySymbol.values()).sort(
         (a, b) => b.volumeRatio - a.volumeRatio || a.symbol.localeCompare(b.symbol),
       );
     }
