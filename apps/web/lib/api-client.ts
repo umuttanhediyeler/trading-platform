@@ -51,6 +51,16 @@ type RequestOptions = {
 
 const DEFAULT_TIMEOUT_MS = 12_000;
 
+/** Long-running API routes that must never fall back to the 12s default. */
+function timeoutForPath(path: string): number | undefined {
+  if (path.includes("/models/generate-signals")) return 120_000;
+  if (path.includes("/models/resolve-signals")) return 30_000;
+  if (path.includes("/models/lifecycle/run")) return 60_000;
+  if (path.includes("/models/portfolio/retrain")) return 30_000;
+  if (path.includes("/scans/") && path.includes("/run")) return 30_000;
+  return undefined;
+}
+
 function getBaseUrl() {
   // Absolute API origin from env (e.g. http://localhost:3001 locally,
   // https://<api>.koyeb.app in production). INTERNAL_API_URL is an optional
@@ -66,7 +76,13 @@ function getBaseUrl() {
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = "GET", body, token, signal, timeoutMs = DEFAULT_TIMEOUT_MS } = options;
+  const {
+    method = "GET",
+    body,
+    token,
+    signal,
+    timeoutMs = timeoutForPath(path) ?? DEFAULT_TIMEOUT_MS,
+  } = options;
   const headers: HeadersInit = {
     Accept: "application/json",
   };
@@ -295,8 +311,8 @@ export const apiClient = {
     }>("/models/generate-signals", {
       method: "POST",
       token,
-      // Full universe run is parallelized server-side; allow a complete pass.
-      timeoutMs: 90_000,
+      // Sync full-universe generate (~40–60s on VM); path default is 120s.
+      timeoutMs: 120_000,
     }),
 
   resolveSignals: (token: string) =>
