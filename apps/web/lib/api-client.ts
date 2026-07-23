@@ -49,15 +49,34 @@ type RequestOptions = {
   timeoutMs?: number;
 };
 
-const DEFAULT_TIMEOUT_MS = 12_000;
+const DEFAULT_TIMEOUT_MS = 20_000;
 
-/** Long-running API routes that must never fall back to the 12s default. */
+/**
+ * Per-route budgets. Long work must return quickly (job id) or be listed here —
+ * never fall through to a surprise client abort.
+ */
 function timeoutForPath(path: string): number | undefined {
+  if (path.includes("/backtest/run")) return 20_000;
+  if (path.includes("/backtest/jobs/")) return 15_000;
+  if (path.includes("/backtest/")) return 20_000;
   if (path.includes("/models/generate-signals")) return 20_000;
   if (path.includes("/models/resolve-signals")) return 30_000;
   if (path.includes("/models/lifecycle/run")) return 60_000;
   if (path.includes("/models/portfolio/retrain")) return 30_000;
-  if (path.includes("/scans/") && path.includes("/run")) return 30_000;
+  if (path.includes("/models/retrain")) return 30_000;
+  if (path.includes("/models")) return 25_000;
+  if (path.includes("/scans/") && path.includes("/run")) return 35_000;
+  if (path.includes("/scans/pulse")) return 25_000;
+  if (path.includes("/scans")) return 20_000;
+  if (path.includes("/market-data")) return 25_000;
+  if (path.includes("/broker")) return 25_000;
+  if (path.includes("/simulation")) return 20_000;
+  if (path.includes("/auth/")) return 20_000;
+  if (path.includes("/users/")) return 20_000;
+  if (path.includes("/signals")) return 20_000;
+  if (path.includes("/watchlists")) return 20_000;
+  if (path.includes("/billing")) return 25_000;
+  if (path.includes("/execution")) return 20_000;
   return undefined;
 }
 
@@ -75,7 +94,22 @@ function getBaseUrl() {
   return process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 }
 
-async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+function isTransientNetworkError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name === "AbortError") return false;
+  const msg = err.message || "";
+  return (
+    msg === "Failed to fetch" ||
+    msg === "Load failed" ||
+    msg === "NetworkError when attempting to fetch resource." ||
+    /networkerror|load failed|failed to fetch|econnreset|etimedout/i.test(msg)
+  );
+}
+
+async function requestOnce<T>(
+  path: string,
+  options: RequestOptions = {},
+): Promise<T> {
   const {
     method = "GET",
     body,
@@ -113,7 +147,10 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     });
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
-      throw new ApiError(`Request timed out after ${timeoutMs}ms`, 408);
+      throw new ApiError(
+        `İstek zaman aşımına uğradı (${Math.round(timeoutMs / 1000)}s). Sayfayı yenileyip tekrar deneyin.`,
+        408,
+      );
     }
     throw err;
   } finally {
@@ -138,10 +175,28 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
       if (typeof raw === "string") message = raw;
       else if (Array.isArray(raw)) message = raw.map(String).join("; ");
     }
+    // Never surface opaque Nest "Internal server error" without context.
+    if (res.status >= 500 && (!message || /internal server error/i.test(message))) {
+      message = `Sunucu hatası (${res.status}). Birkaç saniye sonra tekrar deneyin.`;
+    }
     throw new ApiError(message, res.status, parsed);
   }
 
   return parsed as T;
+}
+
+async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const method = options.method ?? "GET";
+  try {
+    return await requestOnce<T>(path, options);
+  } catch (err) {
+    // One automatic retry for transient GET/network blips (not timeouts).
+    if (method === "GET" && isTransientNetworkError(err)) {
+      await new Promise((r) => setTimeout(r, 500));
+      return requestOnce<T>(path, options);
+    }
+    throw err;
+  }
 }
 
 /** Safari uses "Load failed"; Chrome "Failed to fetch" — both mean network/API down. */
@@ -458,25 +513,62 @@ export const apiClient = {
   signalSummary: (token: string) =>
     request<SignalSummary>("/signals/summary", { token }),
 
-  runBacktest: (
+  runBacktest: async (
     token: string,
     payload: {
       symbol: string;
       strategyId: string;
       params?: Record<string, number | boolean>;
     },
-  ) =>
-    request<BacktestMetrics>("/backtest/run", {
+  ) => {
+    type Job = {
+      status?: "running" | "done" | "error";
+      jobId?: string;
+      result?: BacktestMetrics;
+      error?: string;
+    } & Partial<BacktestMetrics>;
+
+    const started = await request<Job>("/backtest/run", {
       method: "POST",
       token,
       body: payload,
-    }),
+      timeoutMs: 20_000,
+    });
+
+    // Legacy sync response (metrics directly on body).
+    if (started.runId && started.equityCurve) {
+      return started as BacktestMetrics;
+    }
+    if (started.status === "done" && started.result) {
+      return started.result;
+    }
+    if (!started.jobId) {
+      throw new ApiError("Backtest did not return a job id", 500);
+    }
+
+    const deadline = Date.now() + 120_000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 800));
+      const job = await request<Job>(
+        `/backtest/jobs/${encodeURIComponent(started.jobId)}`,
+        { token, timeoutMs: 15_000 },
+      );
+      if (job.status === "done" && job.result) return job.result;
+      if (job.status === "error") {
+        throw new ApiError(job.error || "Backtest failed", 500);
+      }
+    }
+    throw new ApiError("Backtest timed out", 408);
+  },
 
   backtestRuns: (token: string) =>
-    request<BacktestRun[]>("/backtest/runs", { token }),
+    request<BacktestRun[]>("/backtest/runs", { token, timeoutMs: 20_000 }),
 
   backtestStrategies: (token: string) =>
-    request<BacktestStrategy[]>("/backtest/strategies", { token }),
+    request<BacktestStrategy[]>("/backtest/strategies", {
+      token,
+      timeoutMs: 20_000,
+    }),
 
   backtestQuota: (token: string) =>
     request<{
@@ -485,7 +577,7 @@ export const apiClient = {
       remaining: number | null;
       periodStart: string;
       periodEnd: string;
-    }>("/backtest/quota", { token }),
+    }>("/backtest/quota", { token, timeoutMs: 15_000 }),
 
   simulationAccount: (token: string) =>
     request<SimulationAccount>("/simulation/account", { token }),

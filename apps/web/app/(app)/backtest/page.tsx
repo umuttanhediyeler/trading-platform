@@ -11,7 +11,7 @@ import { EmptyState, LoadingBlock } from "@/components/shared/states";
 import { FadeIn } from "@/components/reactbits/FadeIn";
 import { SpotlightCard } from "@/components/reactbits/SpotlightCard";
 import { SpecularButton } from "@/components/reactbits/SpecularButton";
-import { apiClient } from "@/lib/api-client";
+import { apiClient, networkErrorMessage } from "@/lib/api-client";
 import { useExecutionStore } from "@/lib/store";
 import { hasEntitlement } from "@/lib/entitlements";
 import { formatPercent, cn } from "@/lib/utils";
@@ -75,7 +75,7 @@ export default function BacktestPage() {
         }
       })
       .catch((err) => {
-        setError(err instanceof Error ? err.message : "Strateji kataloğu yüklenemedi");
+        setError(networkErrorMessage(err, "Strateji kataloğu yüklenemedi"));
       })
       .finally(() => setCatalogLoading(false));
   }, [enabled, session?.accessToken]);
@@ -121,7 +121,7 @@ export default function BacktestPage() {
       setHistory(await apiClient.backtestRuns(session.accessToken));
     } catch (err) {
       setResult(null);
-      setError(err instanceof Error ? err.message : "Backtest çalıştırılamadı");
+      setError(networkErrorMessage(err, "Backtest çalıştırılamadı"));
     } finally {
       apiClient.backtestQuota(session.accessToken).then(setQuota).catch(() => undefined);
       setLoading(false);

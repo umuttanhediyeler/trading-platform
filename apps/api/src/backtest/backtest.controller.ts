@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
 import { IsISO8601, IsOptional, IsString } from 'class-validator';
 import { Request } from 'express';
 import { AuthenticatedUser } from '../auth/jwt.strategy';
@@ -41,13 +41,17 @@ export class BacktestController {
     const user = req.user as AuthenticatedUser;
     const reservationId = await this.quota.reserve(user.id, user.planTier, dto);
     try {
-      const result = await this.bridge.run(user.id, dto);
-      await this.quota.complete(reservationId);
-      return result;
+      return this.bridge.startRun(user.id, dto, reservationId);
     } catch (error) {
       await this.quota.fail(reservationId, error);
       throw error;
     }
+  }
+
+  @Get('jobs/:jobId')
+  @RequiresEntitlement('backtest_enabled')
+  job(@Param('jobId') jobId: string) {
+    return this.bridge.getJob(jobId);
   }
 
   @Get('quota')

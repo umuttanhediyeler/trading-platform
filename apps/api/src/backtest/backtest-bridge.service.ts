@@ -2,7 +2,8 @@ import {
   BadRequestException,
   Inject,
   Injectable,
-  ServiceUnavailableException,
+  Logger,
+  NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
@@ -11,6 +12,7 @@ import {
   MarketDataProvider,
 } from '../market-data/providers/market-data-provider.interface';
 import { PrismaService } from '../prisma/prisma.service';
+import { BacktestQuotaService } from './backtest-quota.service';
 
 export interface BacktestRequest {
   strategyId: string;
@@ -32,6 +34,13 @@ export interface BacktestResult {
   equityCurve: Array<{ ts: string; equity: number }>;
 }
 
+type BacktestJob = {
+  status: 'running' | 'done' | 'error';
+  startedAt: number;
+  result?: BacktestResult;
+  error?: string;
+};
+
 export interface StrategyCatalogItem {
   id: string;
   name: string;
@@ -50,15 +59,78 @@ export interface StrategyCatalogItem {
 /** HTTP proxy to the Python backtest service (packages/backtest, FastAPI). */
 @Injectable()
 export class BacktestBridgeService {
+  private readonly logger = new Logger(BacktestBridgeService.name);
+  private readonly jobs = new Map<string, BacktestJob>();
+
   constructor(
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
+    private readonly quota: BacktestQuotaService,
     @Inject(MARKET_DATA_PROVIDER)
     private readonly marketData: MarketDataProvider,
   ) {}
 
-  private get baseUrl(): string {
-    return this.config.get<string>('BACKTEST_SERVICE_URL', 'http://localhost:8002');
+  /** Empty / missing URL → skip Python (VM often has no backtest container). */
+  private get baseUrl(): string | null {
+    const raw = this.config.get<string>('BACKTEST_SERVICE_URL')?.trim();
+    if (!raw || raw === '0' || raw === 'false') return null;
+    return raw;
+  }
+
+  /**
+   * Accept immediately; run in-process. Avoids browser 12s aborts while
+   * Alpaca/Python are slow or unreachable.
+   */
+  startRun(
+    userId: string,
+    request: BacktestRequest,
+    reservationId: string,
+  ): { status: 'running'; jobId: string } {
+    const jobId = `bt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    this.jobs.set(jobId, { status: 'running', startedAt: Date.now() });
+    for (const [id, job] of this.jobs) {
+      if (Date.now() - job.startedAt > 30 * 60_000) this.jobs.delete(id);
+    }
+
+    void (async () => {
+      try {
+        const result = await this.run(userId, request);
+        await this.quota.complete(reservationId);
+        this.jobs.set(jobId, {
+          status: 'done',
+          startedAt: Date.now(),
+          result,
+        });
+      } catch (err) {
+        await this.quota.fail(reservationId, err).catch(() => undefined);
+        this.jobs.set(jobId, {
+          status: 'error',
+          startedAt: Date.now(),
+          error: (err as Error).message,
+        });
+        this.logger.warn(
+          `Backtest job ${jobId} failed: ${(err as Error).message}`,
+        );
+      }
+    })();
+
+    return { status: 'running', jobId };
+  }
+
+  getJob(jobId: string): {
+    jobId: string;
+    status: 'running' | 'done' | 'error';
+    result?: BacktestResult;
+    error?: string;
+  } {
+    const job = this.jobs.get(jobId);
+    if (!job) throw new NotFoundException(`Backtest job not found: ${jobId}`);
+    return {
+      jobId,
+      status: job.status,
+      result: job.result,
+      error: job.error,
+    };
   }
 
   async run(userId: string, request: BacktestRequest): Promise<BacktestResult> {
@@ -69,12 +141,8 @@ export class BacktestBridgeService {
     const from = request.from
       ? new Date(request.from)
       : new Date(to.getTime() - 2 * 365 * 24 * 60 * 60 * 1000);
-    const bars = await this.marketData.getHistoricalBars(
-      symbol,
-      '1d',
-      from,
-      to,
-    );
+
+    const bars = await this.loadDailyBars(symbol, from, to);
     if (bars.length < 60) {
       throw new BadRequestException(
         `Backtest requires at least 60 daily bars; received ${bars.length}`,
@@ -83,48 +151,67 @@ export class BacktestBridgeService {
 
     const strategy = this.strategySpec(request.strategyId, request.params);
     const initialCash = Number(request.params?.initialCash ?? 100_000);
-    let stored = { totalReturn: 0, sharpe: 0, maxDrawdown: 0, winRate: 0, expectancy: 0, profitFactor: 0 };
+    let stored = {
+      totalReturn: 0,
+      sharpe: 0,
+      maxDrawdown: 0,
+      winRate: 0,
+      expectancy: 0,
+      profitFactor: 0,
+    };
     let equityCurve: Array<{ ts: string; equity: number }> = [];
     let numTrades = 0;
 
     let usedPython = false;
-    try {
-      const res = await fetch(`${this.baseUrl}/backtest/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: AbortSignal.timeout(30000),
-        body: JSON.stringify({
-          symbol,
-          bars: bars.map((bar) => ({
-            timestamp: bar.timestamp.toISOString(),
-            open: bar.open, high: bar.high, low: bar.low, close: bar.close, volume: bar.volume,
-          })),
-          strategy,
-          initial_cash: initialCash,
-          commission_pct: Number(request.params?.commissionPct ?? 0.001),
-          slippage_pct: Number(request.params?.slippagePct ?? 0.0005),
-        }),
-      });
-      if (res.ok) {
-        usedPython = true;
-        const raw = await res.json();
-        const m = raw.metrics ?? {};
-        equityCurve = (raw.equity_curve ?? []).map((equity: number, index: number) => ({
-          ts: raw.timestamps?.[index] ?? String(index),
-          equity,
-        }));
-        stored = {
-          totalReturn: Number(m.total_return ?? 0) * 100,
-          sharpe: Number(m.sharpe_ratio ?? 0),
-          maxDrawdown: -Number(m.max_drawdown ?? 0) * 100,
-          winRate: Number(m.win_rate ?? 0) * 100,
-          expectancy: Number(m.expectancy ?? 0),
-          profitFactor: Number(m.profit_factor ?? 0),
-        };
-        numTrades = Number(m.num_trades ?? 0);
+    const pythonBase = this.baseUrl;
+    if (pythonBase) {
+      try {
+        const res = await fetch(`${pythonBase}/backtest/run`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          // Fail fast — unreachable service must not block the UI path.
+          signal: AbortSignal.timeout(2_500),
+          body: JSON.stringify({
+            symbol,
+            bars: bars.map((bar) => ({
+              timestamp: bar.timestamp.toISOString(),
+              open: bar.open,
+              high: bar.high,
+              low: bar.low,
+              close: bar.close,
+              volume: bar.volume,
+            })),
+            strategy,
+            initial_cash: initialCash,
+            commission_pct: Number(request.params?.commissionPct ?? 0.001),
+            slippage_pct: Number(request.params?.slippagePct ?? 0.0005),
+          }),
+        });
+        if (res.ok) {
+          usedPython = true;
+          const raw = await res.json();
+          const m = raw.metrics ?? {};
+          equityCurve = (raw.equity_curve ?? []).map(
+            (equity: number, index: number) => ({
+              ts: raw.timestamps?.[index] ?? String(index),
+              equity,
+            }),
+          );
+          stored = {
+            totalReturn: Number(m.total_return ?? 0) * 100,
+            sharpe: Number(m.sharpe_ratio ?? 0),
+            maxDrawdown: -Number(m.max_drawdown ?? 0) * 100,
+            winRate: Number(m.win_rate ?? 0) * 100,
+            expectancy: Number(m.expectancy ?? 0),
+            profitFactor: Number(m.profit_factor ?? 0),
+          };
+          numTrades = Number(m.num_trades ?? 0);
+        }
+      } catch (error) {
+        this.logger.warn(
+          `Python backtest skipped: ${(error as Error).message}`,
+        );
       }
-    } catch {
-      // Python service unreachable — use built-in engine
     }
 
     if (!usedPython) {
@@ -154,14 +241,77 @@ export class BacktestBridgeService {
     };
   }
 
-  async listStrategies(): Promise<StrategyCatalogItem[]> {
+  /** Prefer local daily bars; provider only if the DB slice is too short. */
+  private async loadDailyBars(
+    symbol: string,
+    from: Date,
+    to: Date,
+  ): Promise<
+    Array<{
+      timestamp: Date;
+      open: number;
+      high: number;
+      low: number;
+      close: number;
+      volume: number;
+    }>
+  > {
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        timestamp: Date;
+        open: number;
+        high: number;
+        low: number;
+        close: number;
+        volume: number;
+      }>
+    >`
+      SELECT timestamp, open, high, low, close, volume
+      FROM bars
+      WHERE symbol = ${symbol}
+        AND timestamp = date_trunc('day', timestamp)
+        AND timestamp >= ${from}
+        AND timestamp <= ${to}
+      ORDER BY timestamp ASC
+    `;
+    if (rows.length >= 60) return rows;
+
     try {
-      const res = await fetch(`${this.baseUrl}/strategies`, {
-        signal: AbortSignal.timeout(3000),
-      });
-      if (res.ok) return (await res.json()) as StrategyCatalogItem[];
-    } catch {
-      // Python backtest service unreachable — return built-in catalog.
+      const fetched = await this.marketData.getHistoricalBars(
+        symbol,
+        '1d',
+        from,
+        to,
+      );
+      return fetched.map((bar) => ({
+        timestamp: bar.timestamp,
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+        volume: bar.volume,
+      }));
+    } catch (error) {
+      this.logger.warn(
+        `Backtest bar fetch failed for ${symbol}: ${(error as Error).message}`,
+      );
+      return rows;
+    }
+  }
+
+  async listStrategies(): Promise<StrategyCatalogItem[]> {
+    const pythonBase = this.baseUrl;
+    if (pythonBase) {
+      try {
+        const res = await fetch(`${pythonBase}/strategies`, {
+          signal: AbortSignal.timeout(1_200),
+        });
+        if (res.ok) return (await res.json()) as StrategyCatalogItem[];
+      } catch (error) {
+        this.logger.warn(
+          `Strategy catalog from Python skipped: ${(error as Error).message}`,
+        );
+      }
     }
     return this.builtInStrategies();
   }
