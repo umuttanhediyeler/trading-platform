@@ -11,8 +11,12 @@ export const STRATEGY_RISK: Record<
 };
 
 /**
- * Pick a trade-barrier profile from model regime + confidence so signals are
- * not stuck on a single default (`tb_balanced`).
+ * Pick a trade-barrier profile from model regime + confidence.
+ *
+ * Quality-first (Jul 2026): the 88% Jul-20 window was 100% `tb_balanced`.
+ * Auto-routing into tight_scalp / mean_revert after portfolio rollout
+ * collapsed live hit rate to ~8%. Keep those slots for shadow soak only;
+ * production barriers stay on balanced (± wide swing at very high conf).
  */
 export function pickStrategyId(
   regime: string,
@@ -22,21 +26,21 @@ export function pickStrategyId(
   const normalized = regime.trim().toLowerCase();
 
   if (normalized === 'high_vol' || normalized === 'high-vol') {
-    return conf >= 0.72 ? 'tb_wide_swing' : 'tb_tight_scalp';
+    return conf >= 0.78 ? 'tb_wide_swing' : 'tb_balanced';
   }
   if (normalized === 'trend' || normalized === 'trending') {
-    return conf >= 0.7 ? 'tb_momentum' : 'tb_balanced';
+    return conf >= 0.78 ? 'tb_wide_swing' : 'tb_balanced';
   }
+  // Range / mean-revert: do not emit 1:1 mean_revert barriers in production.
   if (
     normalized === 'range' ||
     normalized === 'ranging' ||
     normalized === 'mean_revert' ||
     normalized === 'mean-reversion'
   ) {
-    return 'tb_mean_revert';
+    return 'tb_balanced';
   }
-  if (conf >= 0.75) return 'tb_momentum';
-  if (conf < 0.62) return 'tb_tight_scalp';
+  if (conf >= 0.8) return 'tb_wide_swing';
   return 'tb_balanced';
 }
 

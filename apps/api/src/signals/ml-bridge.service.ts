@@ -370,7 +370,7 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
         }
         await this.resolveOpenSignals();
         await this.resolveShadowEvaluations();
-        await this.generateSignals(0.58, {
+        await this.generateSignals(0.70, {
           includeShadow: true,
           concurrency: 4,
           preferProviderBars: false,
@@ -582,7 +582,7 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
     shadowEvaluations: number;
   }> {
     const started = Date.now();
-    const result = await this.generateSignals(0.58, {
+    const result = await this.generateSignals(0.70, {
       includeShadow: false,
       concurrency: 10,
       preferProviderBars: false,
@@ -604,7 +604,7 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
     if (!this.signalQueue) {
       await this.resolveOpenSignals();
       await this.resolveShadowEvaluations();
-      await this.generateSignals(0.58, { includeShadow: true, concurrency: 4 });
+      await this.generateSignals(0.70, { includeShadow: true, concurrency: 4 });
       return { queued: true, jobId: undefined };
     }
     const job = await this.signalQueue.add(
@@ -1084,7 +1084,7 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
    * (cron keeps soak warm; the UI path skips it for speed).
    */
   async generateSignals(
-    minConfidence = 0.58,
+    minConfidence = 0.7,
     options?: {
       includeShadow?: boolean;
       concurrency?: number;
@@ -1151,9 +1151,15 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
         }
 
         const prediction = await this.predict(symbol, bars);
-        const strategyId =
-          prediction.strategy_id &&
-          STRATEGY_RISK[prediction.strategy_id as keyof typeof STRATEGY_RISK]
+        // Quality mode: live barriers stay on tb_balanced (Jul-20 profile).
+        // ML may still return a portfolio strategy_id for telemetry, but we do
+        // not size stops/targets off unproven slots until they clear soak.
+        const forceBalanced =
+          this.config.get<string>('SIGNAL_FORCE_BALANCED', '1') !== '0';
+        const strategyId = forceBalanced
+          ? 'tb_balanced'
+          : prediction.strategy_id &&
+              STRATEGY_RISK[prediction.strategy_id as keyof typeof STRATEGY_RISK]
             ? (prediction.strategy_id as keyof typeof STRATEGY_RISK)
             : pickStrategyId(prediction.regime, prediction.confidence);
         const risk = STRATEGY_RISK[strategyId] ?? STRATEGY_RISK.tb_balanced;

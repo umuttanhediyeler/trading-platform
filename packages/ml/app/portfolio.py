@@ -30,20 +30,18 @@ assert set(PORTFOLIO_SLOTS) == set(STRATEGY_CANDIDATES.keys())
 
 
 def pick_strategy_id(regime: str, confidence: float = 0.6) -> str:
-    """Mirror apps/api pickStrategyId — keep barrier profile + model in sync."""
+    """Mirror apps/api pickStrategyId — quality-first (prefer tb_balanced)."""
     conf = confidence if confidence == confidence else 0.6  # NaN guard
     normalized = (regime or "").strip().lower()
 
     if normalized in ("high_vol", "high-vol"):
-        return "tb_wide_swing" if conf >= 0.72 else "tb_tight_scalp"
+        return "tb_wide_swing" if conf >= 0.78 else "tb_balanced"
     if normalized in ("trend", "trending"):
-        return "tb_momentum" if conf >= 0.7 else "tb_balanced"
+        return "tb_wide_swing" if conf >= 0.78 else "tb_balanced"
     if normalized in ("range", "ranging", "mean_revert", "mean-reversion"):
-        return "tb_mean_revert"
-    if conf >= 0.75:
-        return "tb_momentum"
-    if conf < 0.62:
-        return "tb_tight_scalp"
+        return "tb_balanced"
+    if conf >= 0.8:
+        return "tb_wide_swing"
     return "tb_balanced"
 
 

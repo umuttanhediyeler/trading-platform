@@ -144,10 +144,10 @@ describe('risk-targets', () => {
     );
   });
 
-  it('picks diversified strategies from regime + confidence', () => {
-    expect(pickStrategyId('trend', 0.8)).toBe('tb_momentum');
-    expect(pickStrategyId('range', 0.65)).toBe('tb_mean_revert');
-    expect(pickStrategyId('high_vol', 0.6)).toBe('tb_tight_scalp');
+  it('prefers balanced barriers; wide swing only at high confidence', () => {
+    expect(pickStrategyId('trend', 0.8)).toBe('tb_wide_swing');
+    expect(pickStrategyId('range', 0.65)).toBe('tb_balanced');
+    expect(pickStrategyId('high_vol', 0.6)).toBe('tb_balanced');
     expect(pickStrategyId('high_vol', 0.8)).toBe('tb_wide_swing');
     expect(pickStrategyId('unknown', 0.66)).toBe('tb_balanced');
   });

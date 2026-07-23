@@ -101,9 +101,18 @@ def _set_default_from_portfolio() -> None:
 def _resolve_production_model(
     regime: str, confidence_hint: float = 0.65
 ) -> tuple[Any, str | None, float, str | None]:
-    """Pick the portfolio champion for this regime; fall back to balanced."""
-    strategy = pick_strategy_id(regime, confidence_hint)
+    """Pick a production model. Quality mode forces the balanced champion."""
     by = _state["by_strategy"]
+    force_balanced = os.environ.get("ML_FORCE_BALANCED", "1").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    strategy = (
+        "tb_balanced"
+        if force_balanced
+        else pick_strategy_id(regime, confidence_hint)
+    )
     entry = by.get(strategy) or by.get("tb_balanced")
     if entry is None and by:
         entry = next(iter(by.values()))
@@ -230,7 +239,7 @@ class PortfolioTrainRequest(BarsPayload):
 
     save_to_registry: bool = True
     # Soft-activate best-of-slot when hard gates fail but expectancy > 0.
-    activate_best: bool = True
+    activate_best: bool = False
     archive_others: bool = True
 
 
