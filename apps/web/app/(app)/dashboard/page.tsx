@@ -39,6 +39,8 @@ export default function DashboardPage() {
 
   const [rows, setRows] = useState<ScanRow[]>(demoMode ? DEMO_SCAN_ROWS : []);
   const [rowsLive, setRowsLive] = useState(false);
+  const [scanLoading, setScanLoading] = useState(!demoMode);
+  const [scanHasRun, setScanHasRun] = useState(demoMode);
   const [signals, setSignals] = useState<Signal[]>([]);
   const [selected, setSelected] = useState<ScanRow | null>(
     demoMode ? DEMO_SCAN_ROWS[0] ?? null : null,
@@ -65,20 +67,23 @@ export default function DashboardPage() {
     }
   }, [token, demoMode]);
 
-  // Progressive scan after login: liquid top slice first (~120), then expand
-  // the rest of the 500+ universe in background chunks so first paint is fast.
+  // Fast market pulse first (always fills the table), then expand the user's
+  // saved scan in the background. Strict filters like volume_ratio>3 often
+  // match nothing in the liquid head — that used to leave "No scan run yet".
   useEffect(() => {
     if (!token || demoMode) {
       if (demoMode) {
         setRows(DEMO_SCAN_ROWS);
         setSelected(DEMO_SCAN_ROWS[0] ?? null);
         setFocusSymbol(DEMO_SCAN_ROWS[0]?.symbol ?? null);
+        setScanLoading(false);
+        setScanHasRun(true);
       }
       return;
     }
     let cancelled = false;
-    const FAST_LIMIT = 120;
-    const EXPAND_CHUNK = 150;
+    const FAST_LIMIT = 160;
+    const EXPAND_CHUNK = 160;
 
     function mergeRows(prev: ScanRow[], next: ScanRow[]) {
       const bySymbol = new Map(prev.map((r) => [r.symbol, r]));
@@ -88,24 +93,46 @@ export default function DashboardPage() {
       );
     }
 
+    function applyRows(next: ScanRow[], live: boolean) {
+      if (cancelled || next.length === 0) return;
+      setRows((prev) => (live ? mergeRows(prev, next) : next));
+      setSelected((prev) => prev ?? next[0] ?? null);
+      setFocusSymbol((prev) => prev ?? next[0]?.symbol ?? null);
+      setRowsLive(live);
+      setScanHasRun(true);
+    }
+
     (async () => {
+      setScanLoading(true);
       try {
+        // 1) Instant pulse so the pane is never empty.
+        const pulse = await apiClient.scanPulse(token, 40);
+        if (cancelled) return;
+        setScanHasRun(true);
+        if (pulse.rows.length > 0) {
+          applyRows(pulse.rows, true);
+          setScanLoading(false);
+        }
+
+        // 2) User saved scan — progressive expand.
         const scans = await apiClient.listScans(token);
-        if (cancelled || scans.length === 0) return;
+        if (cancelled || scans.length === 0) {
+          setScanLoading(false);
+          return;
+        }
         const scanId = scans[0].id;
 
         const first = await apiClient.runScan(token, scanId, {
           limit: FAST_LIMIT,
           offset: 0,
-          timeoutMs: 20_000,
+          timeoutMs: 25_000,
         });
         if (cancelled) return;
+        setScanHasRun(true);
         if (first.rows.length > 0) {
-          setRows(first.rows);
-          setSelected(first.rows[0]);
-          setFocusSymbol(first.rows[0]?.symbol ?? null);
-          setRowsLive(true);
+          applyRows(first.rows, true);
         }
+        setScanLoading(false);
 
         let offset = first.nextOffset ?? (first.hasMore ? FAST_LIMIT : null);
         while (!cancelled && offset != null) {
@@ -116,13 +143,15 @@ export default function DashboardPage() {
           });
           if (cancelled) return;
           if (batch.rows.length > 0) {
-            setRows((prev) => mergeRows(prev, batch.rows));
-            setRowsLive(true);
+            applyRows(batch.rows, true);
           }
           offset = batch.nextOffset ?? null;
         }
       } catch {
-        // Soft-fail: dashboard still works with signals/watchlists.
+        if (!cancelled) {
+          setScanHasRun(true);
+          setScanLoading(false);
+        }
       }
     })();
 
@@ -272,6 +301,8 @@ export default function DashboardPage() {
         <FadeIn delay={100} className="space-y-4">
           <ScanResultsTable
             rows={rows}
+            loading={scanLoading}
+            hasRun={scanHasRun}
             selectedSymbol={selected?.symbol}
             onSelect={(row) => {
               setSelected(row);

@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  OnModuleInit,
   Param,
   Post,
   Query,
@@ -21,87 +22,150 @@ import { ModelLifecycleService } from './model-lifecycle.service';
 @Controller('models')
 @UseGuards(JwtAuthGuard, EntitlementGuard)
 @RequiresEntitlement('ai_signals_enabled')
-export class ModelsController {
+export class ModelsController implements OnModuleInit {
+  /** Cross-region Postgres RTTs make a cold /models ~8–16s; keep a warm cache. */
+  private listCache: { at: number; body: unknown } | null = null;
+  private static readonly LIST_TTL_MS = 45_000;
+  private warming = false;
+
   constructor(
     private readonly ml: MlBridgeService,
     private readonly prisma: PrismaService,
     private readonly lifecycle: ModelLifecycleService,
   ) {}
 
+  onModuleInit() {
+    setTimeout(() => void this.warmListCache(), 4_000);
+    setInterval(() => void this.warmListCache(), 30_000);
+  }
+
+  private async warmListCache() {
+    if (this.warming) return;
+    this.warming = true;
+    try {
+      await this.buildListPayload(40);
+    } catch {
+      // Boot/network blips — next interval retries.
+    } finally {
+      this.warming = false;
+    }
+  }
+
   @Get()
   async list(@Query('limit') limit?: string) {
-    const take = Math.min(Math.max(Number(limit) || 50, 1), 100);
-    const models = await this.prisma.modelRegistry.findMany({
-      orderBy: { trainedAt: 'desc' },
-      take,
-      include: {
-        performance: {
-          orderBy: { calculatedAt: 'desc' },
-          take: 1,
-        },
-      },
-    });
-    const snapshots = await this.prisma.modelPerformanceSnapshot.findMany({
-      orderBy: { calculatedAt: 'desc' },
-      take: 120,
-      include: {
-        model: {
-          select: {
-            expectancy: true,
-            regime: true,
-            isActive: true,
+    const now = Date.now();
+    if (
+      this.listCache &&
+      now - this.listCache.at < ModelsController.LIST_TTL_MS
+    ) {
+      return this.listCache.body;
+    }
+    const take = Math.min(Math.max(Number(limit) || 40, 1), 80);
+    return this.buildListPayload(take);
+  }
+
+  private async buildListPayload(take: number) {
+    const gates = this.lifecycle.promotionGateConfig();
+
+    const [
+      models,
+      snapshots,
+      openSignals,
+      resolved,
+      recentForDrift,
+      labeledPredictions,
+    ] = await Promise.all([
+      this.prisma.modelRegistry.findMany({
+        where: { status: { in: ['active', 'shadow', 'rejected'] } },
+        orderBy: [{ isActive: 'desc' }, { trainedAt: 'desc' }],
+        take,
+        select: {
+          id: true,
+          version: true,
+          trainedAt: true,
+          precision: true,
+          recall: true,
+          expectancy: true,
+          maxDrawdown: true,
+          regime: true,
+          isActive: true,
+          status: true,
+          artifactPath: true,
+          artifactSha256: true,
+          trainingSamples: true,
+          promotedAt: true,
+          promotionReason: true,
+          shadowStartedAt: true,
+          performance: {
+            orderBy: { calculatedAt: 'desc' },
+            take: 1,
           },
         },
-      },
-    });
-    const openSignals = await this.prisma.signal.count({ where: { status: 'open' } });
-    // Decisive outcomes only — expired rows used to crowd the window and made
-    // hitRate look like ~10% with a tiny TP/SL denominator.
-    const resolved = await this.prisma.signal.findMany({
-      where: { status: { in: ['hit_target', 'hit_stop'] } },
-      orderBy: { resolvedAt: 'desc' },
-      take: 100,
-    });
-    const hits = resolved.filter((s) => s.status === 'hit_target').length;
-    const stops = resolved.filter((s) => s.status === 'hit_stop').length;
-    // Drift still needs recent feature rows (labels optional).
-    const recentForDrift = await this.prisma.prediction.findMany({
-      where: { fallback: false, shadow: false },
-      orderBy: { createdAt: 'desc' },
-      take: 200,
-      select: { features: true },
-    });
-    // Brier needs actualLabel — newest unlabeled predictions are useless here.
-    const labeledPredictions = await this.prisma.prediction.findMany({
-      where: {
-        fallback: false,
-        shadow: false,
-        actualLabel: { not: null },
-      },
-      orderBy: { resolvedAt: 'desc' },
-      take: 200,
-      select: {
-        features: true,
-        probabilities: true,
-        actualLabel: true,
-      },
-    });
+      }),
+      this.prisma.modelPerformanceSnapshot.findMany({
+        orderBy: { calculatedAt: 'desc' },
+        take: 40,
+        include: {
+          model: {
+            select: {
+              expectancy: true,
+              regime: true,
+              isActive: true,
+            },
+          },
+        },
+      }),
+      this.prisma.signal.count({ where: { status: 'open' } }),
+      this.prisma.signal.findMany({
+        where: { status: { in: ['hit_target', 'hit_stop'] } },
+        orderBy: { resolvedAt: 'desc' },
+        take: 100,
+        select: { status: true },
+      }),
+      this.prisma.prediction.findMany({
+        where: { fallback: false, shadow: false },
+        orderBy: { createdAt: 'desc' },
+        take: 60,
+        select: { features: true },
+      }),
+      this.prisma.prediction.findMany({
+        where: {
+          fallback: false,
+          shadow: false,
+          actualLabel: { not: null },
+        },
+        orderBy: { resolvedAt: 'desc' },
+        take: 60,
+        select: {
+          probabilities: true,
+          actualLabel: true,
+        },
+      }),
+    ]);
+
+    const shadowVersions = models
+      .filter((m) => !m.isActive && m.status === 'shadow')
+      .map((m) => m.version);
+    const shadowRows =
+      shadowVersions.length === 0
+        ? []
+        : await this.prisma.shadowEvaluation.findMany({
+            where: { modelVersion: { in: shadowVersions } },
+            orderBy: { generatedAt: 'desc' },
+            take: 200,
+            select: {
+              modelVersion: true,
+              status: true,
+              realizedReturn: true,
+              generatedAt: true,
+            },
+          });
+
     const drift = computeDrift(extractFeatureRows(recentForDrift));
     const calibration = computeBrier(labeledPredictions);
+    const hits = resolved.filter((s) => s.status === 'hit_target').length;
+    const stops = resolved.filter((s) => s.status === 'hit_stop').length;
 
-    // Shadow soak status per challenger, computed over the current soak
-    // window only (post-rollback resets discard stale history).
-    const shadowRows = await this.prisma.shadowEvaluation.findMany({
-      orderBy: { generatedAt: 'desc' },
-      take: 1000,
-      select: {
-        modelVersion: true,
-        status: true,
-        realizedReturn: true,
-        generatedAt: true,
-      },
-    });
-    const gates = this.lifecycle.promotionGateConfig();
     const shadowSoakFor = (model: {
       version: string;
       status: string;
@@ -137,7 +201,7 @@ export class ModelsController {
       };
     };
 
-    return {
+    const body = {
       soakGates: gates,
       models: models.map(({ performance, ...model }) => ({
         ...model,
@@ -164,22 +228,28 @@ export class ModelsController {
         isChampion: model.isActive,
       })),
     };
+
+    this.listCache = { at: Date.now(), body };
+    return body;
   }
 
   @Post('generate-signals')
   generate() {
+    this.listCache = null;
     return this.ml.enqueueGenerateSignals();
   }
 
   /** Queue curated 5-slot portfolio retrain (async). */
   @Post('portfolio/retrain')
   portfolioRetrain() {
+    this.listCache = null;
     return this.ml.enqueuePortfolioTrain();
   }
 
   /** Queue shadow retrains for top liquid symbols (async). */
   @Post('retrain')
   retrain(@Query('limit') limitRaw?: string) {
+    this.listCache = null;
     const n = Math.min(20, Math.max(1, Number(limitRaw) || 10));
     return this.ml.enqueueRetrain(n);
   }
@@ -188,17 +258,20 @@ export class ModelsController {
   async resolve() {
     const signals = await this.ml.resolveOpenSignals();
     const shadow = await this.ml.resolveShadowEvaluations();
+    this.listCache = null;
     return { ...signals, shadowResolved: shadow.resolved };
   }
 
   @Post(':version/promote')
   promote(@Param('version') version: string) {
+    this.listCache = null;
     return this.ml.promoteModel(version);
   }
 
   /** Manually run the champion–challenger lifecycle pass. */
   @Post('lifecycle/run')
   runLifecycle() {
+    this.listCache = null;
     return this.lifecycle.runLifecycle();
   }
 }

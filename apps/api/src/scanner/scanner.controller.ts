@@ -55,6 +55,35 @@ export class ScannerController {
     return SCAN_TEMPLATES;
   }
 
+  /**
+   * Dashboard market pulse — top symbols by relative volume, no saved-filter
+   * dependency. Guarantees the home table has rows even when the user's
+   * strict scans (e.g. volume_ratio > 3) match nothing in the liquid head.
+   */
+  @Get('pulse')
+  async pulse(@Query('limit') limitRaw?: string) {
+    const limit = Math.min(Math.max(Number(limitRaw) || 40, 5), 80);
+    const dsl: FilterGroup = {
+      operator: 'AND',
+      conditions: [{ op: '>', field: 'volume_ratio', value: 1.05 }],
+    };
+    // Prefer the liquid head of SCAN_UNIVERSE for speed, then a mid slice so
+    // the pulse is not only mega-caps.
+    const symbols = [
+      ...SCAN_UNIVERSE.slice(0, 80),
+      ...SCAN_UNIVERSE.slice(80, 200),
+    ];
+    const { rows, scannedSymbols } = await this.scanExecution.execute(
+      dsl,
+      symbols,
+    );
+    return {
+      rows: rows.slice(0, limit),
+      scannedSymbols,
+      totalSymbols: symbols.length,
+    };
+  }
+
   @Get()
   async list(@Req() req: Request) {
     const user = req.user as AuthenticatedUser;

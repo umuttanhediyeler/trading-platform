@@ -209,8 +209,9 @@ export const apiClient = {
         expectancy: number;
         maxDrawdown: number;
         regime: string;
+        strategyId?: string | null;
         isActive: boolean;
-        status: "shadow" | "active" | "rejected";
+        status: "shadow" | "active" | "rejected" | "archived";
         artifactPath?: string | null;
         artifactSha256?: string | null;
         trainingSamples?: number | null;
@@ -263,7 +264,14 @@ export const apiClient = {
         regime: string;
         isChampion: boolean;
       }>;
-    }>("/models", { token }),
+    }>("/models", { token, timeoutMs: 20_000 }),
+
+  scanPulse: (token: string, limit = 40) =>
+    request<{
+      rows: ScanRow[];
+      scannedSymbols: number;
+      totalSymbols: number;
+    }>(`/scans/pulse?limit=${limit}`, { token, timeoutMs: 20_000 }),
 
   promoteModel: (token: string, version: string) =>
     request<{
