@@ -487,8 +487,93 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Manual "Sinyal üret": run the full universe synchronously and return
-   * counts. Optimized for latency (local bars, parallel symbols, no shadow).
+   * Manual "Sinyal üret" job store. HTTP returns immediately with a job id;
+   * the browser polls until status=done so 12s client aborts never fire.
+   */
+  private readonly generateJobs = new Map<
+    string,
+    {
+      status: 'running' | 'done' | 'error';
+      startedAt: number;
+      predictions?: number;
+      signalsCreated?: number;
+      shadowPredictions?: number;
+      shadowEvaluations?: number;
+      error?: string;
+      elapsedMs?: number;
+    }
+  >();
+
+  /**
+   * Kick off a full-universe generate and return a job id immediately.
+   */
+  startManualGenerateSignals(): {
+    status: 'running';
+    jobId: string;
+  } {
+    const jobId = `gen_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const startedAt = Date.now();
+    this.generateJobs.set(jobId, { status: 'running', startedAt });
+    // Drop jobs older than 30 minutes to avoid unbounded growth.
+    for (const [id, job] of this.generateJobs) {
+      if (Date.now() - job.startedAt > 30 * 60_000) this.generateJobs.delete(id);
+    }
+
+    void (async () => {
+      try {
+        const result = await this.runManualGenerateSignals();
+        this.generateJobs.set(jobId, {
+          status: 'done',
+          startedAt,
+          elapsedMs: Date.now() - startedAt,
+          ...result,
+        });
+      } catch (err) {
+        this.generateJobs.set(jobId, {
+          status: 'error',
+          startedAt,
+          elapsedMs: Date.now() - startedAt,
+          error: (err as Error).message,
+        });
+        this.logger.warn(
+          `Manual generate job ${jobId} failed: ${(err as Error).message}`,
+        );
+      }
+    })();
+
+    this.logger.log(`Manual generate started job=${jobId}`);
+    return { status: 'running', jobId };
+  }
+
+  getGenerateJob(jobId: string): {
+    jobId: string;
+    status: 'running' | 'done' | 'error';
+    predictions?: number;
+    signalsCreated?: number;
+    shadowPredictions?: number;
+    shadowEvaluations?: number;
+    error?: string;
+    elapsedMs?: number;
+  } {
+    const job = this.generateJobs.get(jobId);
+    if (!job) {
+      throw new NotFoundException(`Generate job not found: ${jobId}`);
+    }
+    return {
+      jobId,
+      status: job.status,
+      predictions: job.predictions,
+      signalsCreated: job.signalsCreated,
+      shadowPredictions: job.shadowPredictions,
+      shadowEvaluations: job.shadowEvaluations,
+      error: job.error,
+      elapsedMs: job.elapsedMs,
+    };
+  }
+
+  /**
+   * Manual "Sinyal üret": run the full universe and return counts.
+   * Optimized for latency (local bars, parallel symbols, no shadow).
    */
   async runManualGenerateSignals(): Promise<{
     predictions: number;
@@ -510,7 +595,7 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Queue a full signal cycle (cron / background). Prefer
-   * {@link runManualGenerateSignals} for the UI button.
+   * {@link startManualGenerateSignals} for the UI button.
    */
   async enqueueGenerateSignals(): Promise<{
     queued: true;

@@ -53,7 +53,7 @@ const DEFAULT_TIMEOUT_MS = 12_000;
 
 /** Long-running API routes that must never fall back to the 12s default. */
 function timeoutForPath(path: string): number | undefined {
-  if (path.includes("/models/generate-signals")) return 120_000;
+  if (path.includes("/models/generate-signals")) return 20_000;
   if (path.includes("/models/resolve-signals")) return 30_000;
   if (path.includes("/models/lifecycle/run")) return 60_000;
   if (path.includes("/models/portfolio/retrain")) return 30_000;
@@ -300,20 +300,50 @@ export const apiClient = {
       { method: "POST", token },
     ),
 
-  generateSignals: (token: string) =>
-    request<{
-      queued?: boolean;
+  generateSignals: async (token: string) => {
+    type GenerateResult = {
+      status?: "running" | "done" | "error";
       jobId?: string;
       predictions?: number;
       signalsCreated?: number;
       shadowPredictions?: number;
       shadowEvaluations?: number;
-    }>("/models/generate-signals", {
+      error?: string;
+      elapsedMs?: number;
+    };
+
+    // Start returns in milliseconds; work continues on the API.
+    const started = await request<GenerateResult>("/models/generate-signals", {
       method: "POST",
       token,
-      // Sync full-universe generate (~40–60s on VM); path default is 120s.
-      timeoutMs: 120_000,
-    }),
+      timeoutMs: 20_000,
+    });
+
+    if (
+      started.status === "done" ||
+      (typeof started.predictions === "number" && !started.jobId)
+    ) {
+      return started;
+    }
+
+    if (!started.jobId) {
+      throw new ApiError("Signal generation did not return a job id", 500);
+    }
+
+    const deadline = Date.now() + 180_000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const job = await request<GenerateResult>(
+        `/models/generate-signals/jobs/${encodeURIComponent(started.jobId)}`,
+        { token, timeoutMs: 15_000 },
+      );
+      if (job.status === "done") return job;
+      if (job.status === "error") {
+        throw new ApiError(job.error || "Signal generation failed", 500);
+      }
+    }
+    throw new ApiError("Signal generation timed out after 180000ms", 408);
+  },
 
   resolveSignals: (token: string) =>
     request<{

@@ -236,7 +236,14 @@ export class ModelsController implements OnModuleInit {
   @Post('generate-signals')
   generate() {
     this.listCache = null;
-    return this.ml.runManualGenerateSignals();
+    // Return immediately; client polls /generate-signals/jobs/:id for counts.
+    // Avoids browser AbortController (still 12s on some cached bundles).
+    return this.ml.startManualGenerateSignals();
+  }
+
+  @Get('generate-signals/jobs/:jobId')
+  generateJob(@Param('jobId') jobId: string) {
+    return this.ml.getGenerateJob(jobId);
   }
 
   /** Queue curated 5-slot portfolio retrain (async). */
