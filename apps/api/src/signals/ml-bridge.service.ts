@@ -23,6 +23,11 @@ import {
   STRATEGY_RISK,
 } from '../execution/risk-targets';
 import {
+  isBalancedForced,
+  PRIMARY_MIN_CONFIDENCE,
+  PRIMARY_STRATEGY_ID,
+} from '../execution/strategy-policy';
+import {
   MARKET_DATA_PROVIDER,
   MarketDataProvider,
 } from '../market-data/providers/market-data-provider.interface';
@@ -370,7 +375,7 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
         }
         await this.resolveOpenSignals();
         await this.resolveShadowEvaluations();
-        await this.generateSignals(0.70, {
+        await this.generateSignals(PRIMARY_MIN_CONFIDENCE, {
           includeShadow: true,
           concurrency: 4,
           preferProviderBars: false,
@@ -436,7 +441,7 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
         symbol,
         bars,
         save_to_registry: true,
-        activate_best: true,
+        activate_best: false,
         archive_others: true,
       }),
     });
@@ -582,7 +587,7 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
     shadowEvaluations: number;
   }> {
     const started = Date.now();
-    const result = await this.generateSignals(0.70, {
+    const result = await this.generateSignals(PRIMARY_MIN_CONFIDENCE, {
       includeShadow: false,
       concurrency: 10,
       preferProviderBars: false,
@@ -604,7 +609,10 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
     if (!this.signalQueue) {
       await this.resolveOpenSignals();
       await this.resolveShadowEvaluations();
-      await this.generateSignals(0.70, { includeShadow: true, concurrency: 4 });
+      await this.generateSignals(PRIMARY_MIN_CONFIDENCE, {
+        includeShadow: true,
+        concurrency: 4,
+      });
       return { queued: true, jobId: undefined };
     }
     const job = await this.signalQueue.add(
@@ -1084,7 +1092,7 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
    * (cron keeps soak warm; the UI path skips it for speed).
    */
   async generateSignals(
-    minConfidence = 0.7,
+    minConfidence = PRIMARY_MIN_CONFIDENCE,
     options?: {
       includeShadow?: boolean;
       concurrency?: number;
@@ -1151,13 +1159,13 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
         }
 
         const prediction = await this.predict(symbol, bars);
-        // Quality mode: live barriers stay on tb_balanced (Jul-20 profile).
-        // ML may still return a portfolio strategy_id for telemetry, but we do
-        // not size stops/targets off unproven slots until they clear soak.
-        const forceBalanced =
-          this.config.get<string>('SIGNAL_FORCE_BALANCED', '1') !== '0';
+        // PRIMARY path: tb_balanced. Portfolio slots stay alternative/shadow
+        // until soak gates promote them (see strategy-policy.ts).
+        const forceBalanced = isBalancedForced(
+          this.config.get<string>('SIGNAL_FORCE_BALANCED'),
+        );
         const strategyId = forceBalanced
-          ? 'tb_balanced'
+          ? PRIMARY_STRATEGY_ID
           : prediction.strategy_id &&
               STRATEGY_RISK[prediction.strategy_id as keyof typeof STRATEGY_RISK]
             ? (prediction.strategy_id as keyof typeof STRATEGY_RISK)

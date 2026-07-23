@@ -1,8 +1,8 @@
 """Curated 5-model portfolio aligned with triple-barrier strategy profiles.
 
-Slots cover distinct demand styles (scalp → swing, momentum → mean-revert).
-Inference picks the slot from live regime + confidence; training fits one
-champion per slot on daily bars.
+PRIMARY production path is `tb_balanced` (see apps/api strategy-policy.ts and
+ML_FORCE_BALANCED=1). These slots are the ALTERNATIVE path: train + shadow soak
+first, hard-promote only, kill-switch back to balanced if live quality drops.
 """
 
 from __future__ import annotations
