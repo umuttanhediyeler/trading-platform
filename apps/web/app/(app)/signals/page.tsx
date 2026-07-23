@@ -92,15 +92,9 @@ export default function SignalsPage() {
     setError(null);
     try {
       const result = await apiClient.generateSignals(session.accessToken);
-      if (result.queued) {
-        setNotice(
-          "Sinyal üretimi kuyruğa alındı — birkaç dakika içinde tamamlanır.",
-        );
-      } else {
-        setNotice(
-          `${result.predictions ?? 0} tahmin · ${result.signalsCreated ?? 0} yeni açık sinyal`,
-        );
-      }
+      setNotice(
+        `${result.predictions ?? 0} tahmin · ${result.signalsCreated ?? 0} yeni açık sinyal`,
+      );
       await refresh();
     } catch (err: unknown) {
       setError(networkErrorMessage(err, "Sinyal üretimi başarısız"));

@@ -295,7 +295,8 @@ export const apiClient = {
     }>("/models/generate-signals", {
       method: "POST",
       token,
-      timeoutMs: 20_000,
+      // Full universe run is parallelized server-side; allow a complete pass.
+      timeoutMs: 90_000,
     }),
 
   resolveSignals: (token: string) =>

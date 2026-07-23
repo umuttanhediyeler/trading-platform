@@ -28,6 +28,7 @@ import {
 } from '../market-data/providers/market-data-provider.interface';
 import { SignalsGateway } from './signals.gateway';
 import { SimulationService } from '../simulation/simulation.service';
+import { mapWithConcurrency } from '@trading-platform/data';
 
 export const NIGHTLY_QUEUE = 'ml-nightly';
 export const SIGNAL_QUEUE = 'ml-signal-generation';
@@ -182,10 +183,18 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
    * Load recent **daily** bars for training / inference features.
    * The `bars` hypertable mixes 1-minute ticks with daily rows; taking the
    * newest N rows yields ~2 weeks of minutes and collapses walk-forward
-   * windows. Prefer the market-data provider's 1d series, then fall back to
-   * day-boundary rows in Timescale.
+   * windows.
+   *
+   * Training prefers the market-data provider (fresh history). Signal
+   * generation prefers local day-boundary rows first so an 80-symbol run
+   * does not serialize 80 HTTP provider round-trips.
    */
-  async loadBars(symbol: string, limit = 400): Promise<MlBar[]> {
+  async loadBars(
+    symbol: string,
+    limit = 400,
+    opts?: { preferProvider?: boolean },
+  ): Promise<MlBar[]> {
+    const preferProvider = opts?.preferProvider !== false;
     const toMl = (
       bars: Array<{
         timestamp: Date | string;
@@ -208,7 +217,28 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
         volume: Number(bar.volume),
       }));
 
-    try {
+    const loadLocal = async (): Promise<MlBar[]> => {
+      const rows = await this.prisma.$queryRaw<
+        Array<{
+          timestamp: Date;
+          open: number;
+          high: number;
+          low: number;
+          close: number;
+          volume: number;
+        }>
+      >`
+        SELECT timestamp, open, high, low, close, volume
+        FROM bars
+        WHERE symbol = ${symbol}
+          AND timestamp = date_trunc('day', timestamp)
+        ORDER BY timestamp DESC
+        LIMIT ${limit}
+      `;
+      return toMl(rows.reverse());
+    };
+
+    const loadProvider = async (): Promise<MlBar[]> => {
       const to = new Date(Date.now() - 16 * 60_000);
       const from = new Date(
         to.getTime() - Math.max(limit + 40, 260) * 24 * 60 * 60 * 1000,
@@ -219,34 +249,32 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
         from,
         to,
       );
-      if (fetched.length >= Math.min(limit, 80)) {
-        return toMl(fetched.slice(-limit));
+      return toMl(fetched.slice(-limit));
+    };
+
+    if (!preferProvider) {
+      const local = await loadLocal();
+      if (local.length >= Math.min(limit, 60)) return local;
+      try {
+        const remote = await loadProvider();
+        if (remote.length > local.length) return remote;
+      } catch (error) {
+        this.logger.warn(
+          `Daily bar fetch failed for ${symbol}: ${(error as Error).message}`,
+        );
       }
+      return local;
+    }
+
+    try {
+      const remote = await loadProvider();
+      if (remote.length >= Math.min(limit, 80)) return remote;
     } catch (error) {
       this.logger.warn(
         `Daily bar fetch failed for ${symbol}: ${(error as Error).message}`,
       );
     }
-
-    // Day-boundary rows only — skips the 1-minute stream that crowds LIMIT.
-    const rows = await this.prisma.$queryRaw<
-      Array<{
-        timestamp: Date;
-        open: number;
-        high: number;
-        low: number;
-        close: number;
-        volume: number;
-      }>
-    >`
-      SELECT timestamp, open, high, low, close, volume
-      FROM bars
-      WHERE symbol = ${symbol}
-        AND timestamp = date_trunc('day', timestamp)
-      ORDER BY timestamp DESC
-      LIMIT ${limit}
-    `;
-    return toMl(rows.reverse());
+    return loadLocal();
   }
 
   async onModuleInit() {
@@ -342,7 +370,11 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
         }
         await this.resolveOpenSignals();
         await this.resolveShadowEvaluations();
-        await this.generateSignals();
+        await this.generateSignals(0.58, {
+          includeShadow: true,
+          concurrency: 4,
+          preferProviderBars: false,
+        });
       },
       { connection, concurrency: 1, lockDuration: 300_000 },
     );
@@ -455,19 +487,39 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Queue a full signal cycle instead of awaiting it on the HTTP request.
-   * Manual "Sinyal üret" was timing out at the reverse proxy (~60s) while the
-   * universe loop often needs several minutes.
+   * Manual "Sinyal üret": run the full universe synchronously and return
+   * counts. Optimized for latency (local bars, parallel symbols, no shadow).
+   */
+  async runManualGenerateSignals(): Promise<{
+    predictions: number;
+    signalsCreated: number;
+    shadowPredictions: number;
+    shadowEvaluations: number;
+  }> {
+    const started = Date.now();
+    const result = await this.generateSignals(0.58, {
+      includeShadow: false,
+      concurrency: 10,
+      preferProviderBars: false,
+    });
+    this.logger.log(
+      `Manual generate finished in ${Date.now() - started}ms predictions=${result.predictions} signals=${result.signalsCreated}`,
+    );
+    return result;
+  }
+
+  /**
+   * Queue a full signal cycle (cron / background). Prefer
+   * {@link runManualGenerateSignals} for the UI button.
    */
   async enqueueGenerateSignals(): Promise<{
     queued: true;
     jobId: string | undefined;
   }> {
     if (!this.signalQueue) {
-      // Workers disabled (e.g. tests) — still run inline so the endpoint works.
       await this.resolveOpenSignals();
       await this.resolveShadowEvaluations();
-      await this.generateSignals();
+      await this.generateSignals(0.58, { includeShadow: true, concurrency: 4 });
       return { queued: true, jobId: undefined };
     }
     const job = await this.signalQueue.add(
@@ -942,24 +994,77 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Persist every inference. Signals require a production-active model for the
-   * detected regime plus a take-profit prediction over the confidence gate.
-   * Shadow candidates are scored in parallel on the same bars, hidden from
-   * users, so promotion gates can compare live challenger vs champion.
+   * Persist every inference. Signals require a production-active model plus a
+   * take-profit prediction over the confidence gate. Shadow scoring is optional
+   * (cron keeps soak warm; the UI path skips it for speed).
    */
-  async generateSignals(minConfidence = 0.58) {
+  async generateSignals(
+    minConfidence = 0.58,
+    options?: {
+      includeShadow?: boolean;
+      concurrency?: number;
+      preferProviderBars?: boolean;
+    },
+  ) {
+    const includeShadow = options?.includeShadow !== false;
+    const concurrency = Math.max(1, Math.min(options?.concurrency ?? 4, 12));
+    const preferProviderBars = options?.preferProviderBars !== false;
+
     const signalUniverse = await this.signalUniverse.build();
-    const shadowCandidatesByRegime = await this.loadShadowCandidates();
+    const [shadowCandidatesByRegime, activeModels, premiumUsers] =
+      await Promise.all([
+        includeShadow
+          ? this.loadShadowCandidates()
+          : Promise.resolve(
+              new Map<string, Array<{ version: string; regime: string }>>(),
+            ),
+        this.prisma.modelRegistry.findMany({
+          where: { isActive: true, status: 'active' },
+          select: { version: true, regime: true },
+        }),
+        this.prisma.user.findMany({
+          where: {
+            subscription: {
+              planTier: 'premium',
+              status: { in: ['active', 'trialing'] },
+            },
+          },
+          select: {
+            id: true,
+            riskSettings: true,
+            simAccount: { select: { balance: true } },
+          },
+          take: 200,
+        }),
+      ]);
+
+    const activeByVersion = new Map(
+      activeModels.map((m) => [m.version, m] as const),
+    );
+
     let predictions = 0;
     let signalsCreated = 0;
     let shadowPredictions = 0;
     let shadowEvaluations = 0;
     const usedStrategies = new Map<string, number>();
 
-    for (const symbol of signalUniverse) {
-      try {
-        const bars = await this.loadBars(symbol, 120);
-        if (bars.length < 60) continue;
+    const settled = await mapWithConcurrency(
+      signalUniverse,
+      concurrency,
+      async (symbol) => {
+        const bars = await this.loadBars(symbol, 120, {
+          preferProvider: preferProviderBars,
+        });
+        if (bars.length < 60) {
+          return {
+            predictions: 0,
+            signalsCreated: 0,
+            shadowPredictions: 0,
+            shadowEvaluations: 0,
+            strategyId: null as string | null,
+          };
+        }
+
         const prediction = await this.predict(symbol, bars);
         const strategyId =
           prediction.strategy_id &&
@@ -967,6 +1072,7 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
             ? (prediction.strategy_id as keyof typeof STRATEGY_RISK)
             : pickStrategyId(prediction.regime, prediction.confidence);
         const risk = STRATEGY_RISK[strategyId] ?? STRATEGY_RISK.tb_balanced;
+
         const storedPrediction = await this.prisma.prediction.create({
           data: {
             symbol,
@@ -981,55 +1087,61 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
             dataCutoff: new Date(bars[bars.length - 1].timestamp),
           },
         });
-        predictions += 1;
 
-        // Shadow scoring runs before the production gates on purpose: it must
-        // happen even when there is no active champion (bootstrap) or the
-        // champion declines the trade.
-        const candidates =
-          shadowCandidatesByRegime.get(prediction.regime) ?? [];
-        if (candidates.length > 0) {
-          const shadowResult = await this.evaluateShadowCandidates({
-            symbol,
-            bars,
-            candidates,
-            risk,
-            minConfidence,
-            productionVersion: prediction.model_version,
-          });
-          shadowPredictions += shadowResult.predictions;
-          shadowEvaluations += shadowResult.evaluations;
+        let localShadowPredictions = 0;
+        let localShadowEvaluations = 0;
+        if (includeShadow) {
+          const candidates =
+            shadowCandidatesByRegime.get(prediction.regime) ?? [];
+          if (candidates.length > 0) {
+            const shadowResult = await this.evaluateShadowCandidates({
+              symbol,
+              bars,
+              candidates,
+              risk,
+              minConfidence,
+              productionVersion: prediction.model_version,
+            });
+            localShadowPredictions = shadowResult.predictions;
+            localShadowEvaluations = shadowResult.evaluations;
+          }
         }
 
-        // Model labels are long-trade outcomes (tp / sl / timeout), not
-        // direction. Predicting "sl" means "don't enter" — never invent a short.
         if (
           prediction.fallback ||
           !prediction.model_version ||
           prediction.prediction !== 'tp' ||
           prediction.confidence < minConfidence
         ) {
-          continue;
+          return {
+            predictions: 1,
+            signalsCreated: 0,
+            shadowPredictions: localShadowPredictions,
+            shadowEvaluations: localShadowEvaluations,
+            strategyId: null,
+          };
         }
-        const tradeSide = 'buy' as const;
-        const activeModel = await this.prisma.modelRegistry.findUnique({
-          where: { version: prediction.model_version },
-          select: { isActive: true, status: true, regime: true },
-        });
-        if (!activeModel?.isActive || activeModel.status !== 'active') {
+
+        const activeModel = activeByVersion.get(prediction.model_version);
+        if (!activeModel) {
           this.logger.warn(
             `Prediction ignored: ${prediction.model_version} is not an active champion`,
           );
-          continue;
+          return {
+            predictions: 1,
+            signalsCreated: 0,
+            shadowPredictions: localShadowPredictions,
+            shadowEvaluations: localShadowEvaluations,
+            strategyId: null,
+          };
         }
-        // Prefer regime-matched champions; if the only live model is for
-        // another regime, still trade so the bot is not stuck silent.
         if (activeModel.regime !== prediction.regime) {
           this.logger.warn(
             `Using active model ${prediction.model_version} (${activeModel.regime}) for ${prediction.regime} prediction on ${symbol}`,
           );
         }
 
+        const tradeSide = 'buy' as const;
         const last = bars[bars.length - 1];
         const entry = last.close;
         const signalTargets = computeRiskTargets({
@@ -1039,9 +1151,6 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
           confidence: prediction.confidence,
           side: tradeSide,
         });
-        const stop = signalTargets.stopPrice;
-        const target = signalTargets.targetPrice;
-        usedStrategies.set(strategyId, (usedStrategies.get(strategyId) ?? 0) + 1);
         const existing = await this.prisma.signal.findFirst({
           where: {
             symbol,
@@ -1049,22 +1158,29 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
             generatedAt: { gte: new Date(Date.now() - 4 * 60 * 60 * 1000) },
           },
         });
-        if (existing) continue;
+        if (existing) {
+          return {
+            predictions: 1,
+            signalsCreated: 0,
+            shadowPredictions: localShadowPredictions,
+            shadowEvaluations: localShadowEvaluations,
+            strategyId: null,
+          };
+        }
 
         const signal = await this.prisma.signal.create({
           data: {
             symbol,
             strategyId,
             entryPrice: entry,
-            stopPrice: stop,
-            targetPrice: target,
+            stopPrice: signalTargets.stopPrice,
+            targetPrice: signalTargets.targetPrice,
             confidence: prediction.confidence,
             status: 'open',
             modelVersion: prediction.model_version,
             predictionId: storedPrediction.id,
           },
         });
-        signalsCreated += 1;
         signalsCreatedTotal.inc();
         this.gateway.emitNewSignal({
           id: signal.id,
@@ -1080,20 +1196,6 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
           modelVersion: signal.modelVersion,
         });
 
-        const premiumUsers = await this.prisma.user.findMany({
-          where: {
-            subscription: {
-              planTier: 'premium',
-              status: { in: ['active', 'trialing'] },
-            },
-          },
-          select: {
-            id: true,
-            riskSettings: true,
-            simAccount: { select: { balance: true } },
-          },
-          take: 200,
-        });
         for (const user of premiumUsers) {
           const maxRisk = user.riskSettings?.maxRiskPerTrade ?? 2;
           const userTargets = computeRiskTargets({
@@ -1124,12 +1226,40 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
             })
             .catch(() => undefined);
         }
+
         this.logger.log(
           `Signal created ${tradeSide} ${symbol} strategy=${strategyId} conf=${prediction.confidence.toFixed(2)}`,
         );
-      } catch (err) {
+
+        return {
+          predictions: 1,
+          signalsCreated: 1,
+          shadowPredictions: localShadowPredictions,
+          shadowEvaluations: localShadowEvaluations,
+          strategyId,
+        };
+      },
+    );
+
+    for (const item of settled) {
+      if (!item.ok) {
         this.logger.warn(
-          `Signal generation failed for ${symbol}: ${(err as Error).message}`,
+          `Signal generation failed for ${String(item.item)}: ${
+            item.error instanceof Error
+              ? item.error.message
+              : String(item.error)
+          }`,
+        );
+        continue;
+      }
+      predictions += item.value.predictions;
+      signalsCreated += item.value.signalsCreated;
+      shadowPredictions += item.value.shadowPredictions;
+      shadowEvaluations += item.value.shadowEvaluations;
+      if (item.value.strategyId) {
+        usedStrategies.set(
+          item.value.strategyId,
+          (usedStrategies.get(item.value.strategyId) ?? 0) + 1,
         );
       }
     }

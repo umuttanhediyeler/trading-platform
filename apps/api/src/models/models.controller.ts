@@ -236,7 +236,7 @@ export class ModelsController implements OnModuleInit {
   @Post('generate-signals')
   generate() {
     this.listCache = null;
-    return this.ml.enqueueGenerateSignals();
+    return this.ml.runManualGenerateSignals();
   }
 
   /** Queue curated 5-slot portfolio retrain (async). */

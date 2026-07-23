@@ -65,17 +65,16 @@ export default function ModelsPage() {
     setNotice(null);
     try {
       const result = await apiClient.generateSignals(session.accessToken);
-      if (result.queued) {
-        setNotice(
-          "Sinyal üretimi kuyruğa alındı. Birkaç dakika içinde tamamlanır; sayfayı yenileyerek sonuçları kontrol edin.",
-        );
-        void load();
-      } else {
-        setNotice(
-          `${result.predictions ?? 0} tahmin kaydedildi, ${result.signalsCreated ?? 0} yeni sinyal oluşturuldu.`,
-        );
-        await load();
-      }
+      setNotice(
+        `${result.predictions ?? 0} tahmin kaydedildi, ${result.signalsCreated ?? 0} yeni sinyal oluşturuldu.`,
+      );
+      await load();
+    } catch (err) {
+      setError(networkErrorMessage(err, "Sinyal üretimi başarısız"));
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function runLifecycle() {
     if (!session?.accessToken) return;
