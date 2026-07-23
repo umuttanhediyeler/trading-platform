@@ -65,17 +65,66 @@ export default function DashboardPage() {
     }
   }, [token, demoMode]);
 
-  // Lightweight mount: signals + watchlists. Do NOT auto-runScan —
-  // that POST stampeded the API on every dashboard visit.
+  // Progressive scan after login: liquid top slice first (~120), then expand
+  // the rest of the 500+ universe in background chunks so first paint is fast.
   useEffect(() => {
-    if (!token) return;
-    let cancelled = false;
-
-    if (demoMode) {
-      setRows(DEMO_SCAN_ROWS);
-      setSelected(DEMO_SCAN_ROWS[0] ?? null);
-      setFocusSymbol(DEMO_SCAN_ROWS[0]?.symbol ?? null);
+    if (!token || demoMode) {
+      if (demoMode) {
+        setRows(DEMO_SCAN_ROWS);
+        setSelected(DEMO_SCAN_ROWS[0] ?? null);
+        setFocusSymbol(DEMO_SCAN_ROWS[0]?.symbol ?? null);
+      }
+      return;
     }
+    let cancelled = false;
+    const FAST_LIMIT = 120;
+    const EXPAND_CHUNK = 150;
+
+    function mergeRows(prev: ScanRow[], next: ScanRow[]) {
+      const bySymbol = new Map(prev.map((r) => [r.symbol, r]));
+      for (const row of next) bySymbol.set(row.symbol, row);
+      return [...bySymbol.values()].sort(
+        (a, b) => b.volumeRatio - a.volumeRatio || a.symbol.localeCompare(b.symbol),
+      );
+    }
+
+    (async () => {
+      try {
+        const scans = await apiClient.listScans(token);
+        if (cancelled || scans.length === 0) return;
+        const scanId = scans[0].id;
+
+        const first = await apiClient.runScan(token, scanId, {
+          limit: FAST_LIMIT,
+          offset: 0,
+          timeoutMs: 20_000,
+        });
+        if (cancelled) return;
+        if (first.rows.length > 0) {
+          setRows(first.rows);
+          setSelected(first.rows[0]);
+          setFocusSymbol(first.rows[0]?.symbol ?? null);
+          setRowsLive(true);
+        }
+
+        let offset = first.nextOffset ?? (first.hasMore ? FAST_LIMIT : null);
+        while (!cancelled && offset != null) {
+          const batch = await apiClient.runScan(token, scanId, {
+            limit: EXPAND_CHUNK,
+            offset,
+            timeoutMs: 30_000,
+          });
+          if (cancelled) return;
+          if (batch.rows.length > 0) {
+            setRows((prev) => mergeRows(prev, batch.rows));
+            setRowsLive(true);
+          }
+          offset = batch.nextOffset ?? null;
+        }
+      } catch {
+        // Soft-fail: dashboard still works with signals/watchlists.
+      }
+    })();
 
     void apiClient
       .signals(token)

@@ -10,6 +10,7 @@ import {
   Param,
   Post,
   Put,
+  Query,
   Req,
   ServiceUnavailableException,
   UseGuards,
@@ -19,6 +20,7 @@ import { Request } from 'express';
 import { EntitlementsService } from '../auth/entitlements.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AuthenticatedUser } from '../auth/jwt.strategy';
+import { SCAN_UNIVERSE } from '../market-data/scan-universe';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   FilterGroup,
@@ -122,7 +124,12 @@ export class ScannerController {
   }
 
   @Post(':id/run')
-  async run(@Req() req: Request, @Param('id') id: string) {
+  async run(
+    @Req() req: Request,
+    @Param('id') id: string,
+    @Query('limit') limitRaw?: string,
+    @Query('offset') offsetRaw?: string,
+  ) {
     const user = req.user as AuthenticatedUser;
     const scan = await this.prisma.scanDefinition.findFirst({
       where: { id, userId: user.id },
@@ -132,16 +139,40 @@ export class ScannerController {
     }
 
     const dsl = scan.filterDSL as unknown as FilterGroup;
-    try {
-      const { rows, scannedSymbols } = await this.scanExecution.execute(dsl);
+    const universe = SCAN_UNIVERSE;
+    const offset = Math.max(0, Number(offsetRaw) || 0);
+    const requested = Number(limitRaw);
+    // Default = full universe (Scanner page). Dashboard passes a small limit
+    // for first paint, then expands with offset.
+    const limit = Number.isFinite(requested)
+      ? Math.min(Math.max(1, Math.floor(requested)), universe.length)
+      : universe.length;
+    const slice = universe.slice(offset, offset + limit);
 
-      if (scannedSymbols === 0) {
+    try {
+      const { rows, scannedSymbols } = await this.scanExecution.execute(
+        dsl,
+        slice,
+      );
+
+      if (scannedSymbols === 0 && slice.length > 0) {
         throw new ServiceUnavailableException(
-          'Market data was unavailable for every symbol in the scan universe',
+          'Market data was unavailable for every symbol in this scan batch',
         );
       }
       this.gateway.emitScanResult(user.id, scan.id, rows);
-      return { scanId: scan.id, rows };
+      const nextOffset = offset + limit;
+      return {
+        scanId: scan.id,
+        rows,
+        scannedSymbols,
+        batchSize: slice.length,
+        totalSymbols: universe.length,
+        offset,
+        limit,
+        hasMore: nextOffset < universe.length,
+        nextOffset: nextOffset < universe.length ? nextOffset : null,
+      };
     } catch (error) {
       if (error instanceof HttpException) throw error;
       const message = error instanceof Error ? error.message : String(error);

@@ -55,6 +55,7 @@ class ModelResult:
     n_test: int
     backend: str
     feature_importance: dict[str, float] = field(default_factory=dict)
+    tp_threshold: float = 0.5
     model: Any = None  # fitted estimator; excluded from API serialization
 
     def to_dict(self) -> dict:
@@ -72,18 +73,24 @@ class ModelResult:
             "n_test": self.n_test,
             "backend": self.backend,
             "feature_importance": self.feature_importance,
+            "tp_threshold": self.tp_threshold,
         }
         return d
 
 
 def _make_classifier():
+    # Balanced weights + slightly conservative leaves: TP is rare relative to
+    # timeout/sl, so unweighted fits chase majority classes and tank precision.
     if HAS_LIGHTGBM:
         return (
             lgb.LGBMClassifier(
-                n_estimators=200,
-                learning_rate=0.05,
-                num_leaves=31,
-                min_child_samples=10,
+                n_estimators=300,
+                learning_rate=0.04,
+                num_leaves=24,
+                min_child_samples=20,
+                subsample=0.85,
+                colsample_bytree=0.85,
+                class_weight="balanced",
                 verbose=-1,
             ),
             "lightgbm",
@@ -91,7 +98,87 @@ def _make_classifier():
     from sklearn.ensemble import HistGradientBoostingClassifier
 
     logger.warning("lightgbm not installed; falling back to sklearn HistGradientBoosting")
-    return HistGradientBoostingClassifier(max_iter=200, learning_rate=0.05), "sklearn"
+    # class_weight landed in sklearn>=1.2; omit when unavailable.
+    try:
+        return (
+            HistGradientBoostingClassifier(
+                max_iter=300,
+                learning_rate=0.04,
+                max_leaf_nodes=24,
+                min_samples_leaf=20,
+                class_weight="balanced",
+            ),
+            "sklearn",
+        )
+    except TypeError:
+        return (
+            HistGradientBoostingClassifier(
+                max_iter=300,
+                learning_rate=0.04,
+                max_leaf_nodes=24,
+                min_samples_leaf=20,
+            ),
+            "sklearn",
+        )
+
+
+def _tp_probability_threshold(
+    clf: Any,
+    X_val: np.ndarray,
+    y_val: np.ndarray,
+    tp: int,
+    min_recall: float = 0.12,
+) -> float:
+    """Pick a TP probability floor on a held-out train slice.
+
+    Argmax over three noisy classes rarely clears a 0.55 precision gate.
+    Raising the TP floor trades recall for precision — what promotion cares about.
+    """
+    if not hasattr(clf, "predict_proba") or len(X_val) == 0:
+        return 0.5
+    classes = [int(c) for c in clf.classes_]
+    if tp not in classes:
+        return 0.5
+    idx = classes.index(tp)
+    p_tp = clf.predict_proba(X_val)[:, idx]
+    best_t, best_prec = 0.5, -1.0
+    for t in np.linspace(0.35, 0.78, 18):
+        pred = p_tp >= t
+        if int(pred.sum()) == 0:
+            continue
+        prec = float(precision_score(y_val == tp, pred, zero_division=0))
+        rec = float(recall_score(y_val == tp, pred, zero_division=0))
+        if rec < min_recall:
+            continue
+        # Prefer higher precision; break ties toward slightly higher recall.
+        score = prec + 0.01 * rec
+        if score > best_prec:
+            best_prec = score
+            best_t = float(t)
+    return best_t
+
+
+def _predict_with_tp_threshold(
+    clf: Any, X: np.ndarray, tp: int, threshold: float
+) -> np.ndarray:
+    """Predict labels; emit TP only when P(tp) clears the calibrated floor."""
+    if not hasattr(clf, "predict_proba"):
+        return clf.predict(X)
+    proba = clf.predict_proba(X)
+    classes = np.asarray([int(c) for c in clf.classes_])
+    if tp not in classes:
+        return classes[np.argmax(proba, axis=1)]
+    tp_idx = int(np.where(classes == tp)[0][0])
+    out = np.empty(len(X), dtype=int)
+    for i in range(len(X)):
+        if proba[i, tp_idx] >= threshold:
+            out[i] = tp
+        else:
+            # Mask TP so argmax cannot still pick a weak TP probability.
+            row = proba[i].copy()
+            row[tp_idx] = -1.0
+            out[i] = int(classes[int(np.argmax(row))])
+    return out
 
 
 def build_training_frame(
@@ -196,10 +283,27 @@ def walk_forward_train(
         y_test = test_df["label"].to_numpy()
 
         clf, backend = _make_classifier()
-        clf.fit(X_train, y_train)
-        y_pred = clf.predict(X_test)
+        # Time-ordered holdout inside the train slice for threshold calibration
+        # (never use the test fold — that would inflate promotion metrics).
+        val_n = max(int(len(train_df) * 0.2), 15)
+        if len(train_df) - val_n < 20:
+            fit_df, val_df = train_df, train_df.iloc[0:0]
+        else:
+            fit_df = train_df.iloc[:-val_n]
+            val_df = train_df.iloc[-val_n:]
+        X_fit = fit_df[list(FEATURE_COLUMNS)].to_numpy()
+        y_fit = fit_df["label"].to_numpy()
+        clf.fit(X_fit, y_fit)
 
         tp = LABEL_TO_INT["tp"]
+        if len(val_df) > 0:
+            X_val = val_df[list(FEATURE_COLUMNS)].to_numpy()
+            y_val = val_df["label"].to_numpy()
+            tp_threshold = _tp_probability_threshold(clf, X_val, y_val, tp)
+        else:
+            tp_threshold = 0.5
+
+        y_pred = _predict_with_tp_threshold(clf, X_test, tp, tp_threshold)
         precision = float(
             precision_score(y_test == tp, y_pred == tp, zero_division=0)
         )
@@ -225,10 +329,11 @@ def walk_forward_train(
                 expectancy=expectancy,
                 max_drawdown=max_dd,
                 regime="range",  # refined below when raw bars are available
-                n_train=len(train_df),
+                n_train=len(fit_df),
                 n_test=len(test_df),
                 backend=backend,
                 feature_importance=importance,
+                tp_threshold=tp_threshold,
                 model=clf,
             )
         )

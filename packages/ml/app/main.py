@@ -63,16 +63,21 @@ INT_TO_LABEL = {v: k for k, v in LABEL_TO_INT.items()}
 
 # Latest fitted model kept in memory; /predict falls back to a neutral
 # heuristic when no model has been trained yet in this process.
-_state: dict = {"model": None, "version": None, "regime": None}
+_state: dict = {
+    "model": None,
+    "version": None,
+    "regime": None,
+    "tp_threshold": 0.5,
+}
 
 # Small LRU of shadow (challenger) models loaded on demand for parallel
 # evaluation. Kept strictly separate from _state so shadow inference can never
 # leak into production predictions.
-_shadow_models: OrderedDict[str, Any] = OrderedDict()
+_shadow_models: OrderedDict[str, tuple[Any, float]] = OrderedDict()
 _SHADOW_CACHE_MAX = int(os.environ.get("SHADOW_MODEL_CACHE_MAX", "8"))
 
 
-def _load_shadow_model(version: str) -> Any | None:
+def _load_shadow_model(version: str) -> tuple[Any, float] | None:
     """Load a specific model version from the artifact store (LRU-cached)."""
     if version in _shadow_models:
         _shadow_models.move_to_end(version)
@@ -80,10 +85,22 @@ def _load_shadow_model(version: str) -> Any | None:
     payload = load_artifact(version)
     if not payload or payload.get("model") is None:
         return None
-    _shadow_models[version] = payload["model"]
+    meta = payload.get("meta") or {}
+    entry = (payload["model"], float(meta.get("tp_threshold", 0.5)))
+    _shadow_models[version] = entry
     while len(_shadow_models) > _SHADOW_CACHE_MAX:
         _shadow_models.popitem(last=False)
-    return payload["model"]
+    return entry
+
+
+def _choose_label(probabilities: dict[str, float], tp_threshold: float) -> str:
+    """Emit TP only when its probability clears the calibrated floor."""
+    if probabilities.get("tp", 0.0) >= tp_threshold:
+        return "tp"
+    non_tp = {k: v for k, v in probabilities.items() if k != "tp"}
+    if not non_tp:
+        return max(probabilities, key=probabilities.get)
+    return max(non_tp, key=non_tp.get)
 
 PREDICTIONS_TOTAL = Counter(
     "ml_predictions_total", "Predictions served", ["fallback"]
@@ -191,14 +208,15 @@ def predict(payload: PredictRequest) -> dict:
     feature_timestamp = pd.Timestamp(bars["timestamp"].iloc[-1]).isoformat()
     model = _state["model"]
     model_version = _state["version"]
+    tp_threshold = float(_state.get("tp_threshold") or 0.5)
     if payload.model_version and payload.model_version != _state["version"]:
-        shadow_model = _load_shadow_model(payload.model_version)
-        if shadow_model is None:
+        shadow = _load_shadow_model(payload.model_version)
+        if shadow is None:
             raise HTTPException(
                 status_code=404,
                 detail=f"model artifact {payload.model_version} not found",
             )
-        model = shadow_model
+        model, tp_threshold = shadow
         model_version = payload.model_version
     if model is None:
         # No trained model in this process yet: return a neutral, clearly
@@ -223,7 +241,7 @@ def predict(payload: PredictRequest) -> dict:
     probabilities = {label: float(p) for label, p in zip(classes, proba)}
     for label in ("tp", "sl", "timeout"):
         probabilities.setdefault(label, 0.0)
-    best = max(probabilities, key=probabilities.get)
+    best = _choose_label(probabilities, tp_threshold)
     PREDICTIONS_TOTAL.labels(fallback="false").inc()
     return {
         "symbol": payload.symbol,
@@ -262,13 +280,22 @@ def train(payload: TrainRequest) -> dict:
     artifact_path = save_artifact(
         version,
         last.model,
-        meta={"regime": last.regime, "shadow": payload.shadow},
+        meta={
+            "regime": last.regime,
+            "shadow": payload.shadow,
+            "tp_threshold": last.tp_threshold,
+        },
     )
     artifact_hash = artifact_sha256(version)
     # A shadow model must never serve production predictions. Only explicitly
     # active training runs or successful promotion can replace process state.
     if not payload.shadow:
-        _state.update(model=last.model, version=version, regime=last.regime)
+        _state.update(
+            model=last.model,
+            version=version,
+            regime=last.regime,
+            tp_threshold=last.tp_threshold,
+        )
 
     registered_to = None
     if payload.save_to_registry:
@@ -327,9 +354,11 @@ def promote(version: str) -> dict:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     artifact = load_artifact(version)
     if artifact and artifact.get("model") is not None:
+        meta = artifact.get("meta") or {}
         _state.update(
             model=artifact["model"],
             version=version,
             regime=result.get("regime"),
+            tp_threshold=float(meta.get("tp_threshold", 0.5)),
         )
     return result

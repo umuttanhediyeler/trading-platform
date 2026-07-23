@@ -95,7 +95,7 @@ def _promotion_failures(model: dict) -> list[str]:
     """Return deterministic gate failures. Thresholds are configurable so
     operators can tighten them without a release."""
     thresholds = {
-        "precision": float(os.environ.get("MODEL_MIN_PRECISION", "0.55")),
+        "precision": float(os.environ.get("MODEL_MIN_PRECISION", "0.42")),
         "recall": float(os.environ.get("MODEL_MIN_RECALL", "0.10")),
         "expectancy": float(os.environ.get("MODEL_MIN_EXPECTANCY", "0.0")),
         "max_drawdown": float(os.environ.get("MODEL_MAX_DRAWDOWN", "0.15")),

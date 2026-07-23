@@ -177,8 +177,57 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
     return res.json();
   }
 
-  /** Load recent daily bars for a symbol from the Timescale hypertable. */
+  /**
+   * Load recent **daily** bars for training / inference features.
+   * The `bars` hypertable mixes 1-minute ticks with daily rows; taking the
+   * newest N rows yields ~2 weeks of minutes and collapses walk-forward
+   * windows. Prefer the market-data provider's 1d series, then fall back to
+   * day-boundary rows in Timescale.
+   */
   async loadBars(symbol: string, limit = 400): Promise<MlBar[]> {
+    const toMl = (
+      bars: Array<{
+        timestamp: Date | string;
+        open: number;
+        high: number;
+        low: number;
+        close: number;
+        volume: number;
+      }>,
+    ): MlBar[] =>
+      bars.map((bar) => ({
+        timestamp:
+          bar.timestamp instanceof Date
+            ? bar.timestamp.toISOString()
+            : new Date(bar.timestamp).toISOString(),
+        open: Number(bar.open),
+        high: Number(bar.high),
+        low: Number(bar.low),
+        close: Number(bar.close),
+        volume: Number(bar.volume),
+      }));
+
+    try {
+      const to = new Date(Date.now() - 16 * 60_000);
+      const from = new Date(
+        to.getTime() - Math.max(limit + 40, 260) * 24 * 60 * 60 * 1000,
+      );
+      const fetched = await this.marketData.getHistoricalBars(
+        symbol,
+        '1d',
+        from,
+        to,
+      );
+      if (fetched.length >= Math.min(limit, 80)) {
+        return toMl(fetched.slice(-limit));
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Daily bar fetch failed for ${symbol}: ${(error as Error).message}`,
+      );
+    }
+
+    // Day-boundary rows only — skips the 1-minute stream that crowds LIMIT.
     const rows = await this.prisma.$queryRaw<
       Array<{
         timestamp: Date;
@@ -192,51 +241,11 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
       SELECT timestamp, open, high, low, close, volume
       FROM bars
       WHERE symbol = ${symbol}
+        AND timestamp = date_trunc('day', timestamp)
       ORDER BY timestamp DESC
       LIMIT ${limit}
     `;
-    const stored = rows
-      .reverse()
-      .map((r) => ({
-        timestamp: new Date(r.timestamp).toISOString(),
-        open: Number(r.open),
-        high: Number(r.high),
-        low: Number(r.low),
-        close: Number(r.close),
-        volume: Number(r.volume),
-      }));
-    if (stored.length >= Math.min(limit, 120)) return stored;
-
-    // A fresh installation may not have accumulated enough Timescale bars yet.
-    // Backfill from the configured market-data provider so training/signals are
-    // usable immediately, while normal operation still prefers local storage.
-    try {
-      const to = new Date(Date.now() - 16 * 60_000);
-      const from = new Date(
-        to.getTime() - Math.max(limit * 2, 180) * 24 * 60 * 60 * 1000,
-      );
-      const fetched = await this.marketData.getHistoricalBars(
-        symbol,
-        '1d',
-        from,
-        to,
-      );
-      if (fetched.length > stored.length) {
-        return fetched.slice(-limit).map((bar) => ({
-          timestamp: bar.timestamp.toISOString(),
-          open: bar.open,
-          high: bar.high,
-          low: bar.low,
-          close: bar.close,
-          volume: bar.volume,
-        }));
-      }
-    } catch (error) {
-      this.logger.warn(
-        `Market-data backfill failed for ${symbol}: ${(error as Error).message}`,
-      );
-    }
-    return stored;
+    return toMl(rows.reverse());
   }
 
   async onModuleInit() {
@@ -275,17 +284,105 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
       connection,
     );
 
-    this.signalQueue = await this.schedule(
+    this.signalQueue = await this.scheduleSignalQueue(connection);
+  }
+
+  private async scheduleSignalQueue(
+    connection: ReturnType<MlBridgeService['connectionOptions']>,
+  ): Promise<Queue> {
+    const queue = new Queue(SIGNAL_QUEUE, { connection });
+    const worker = new Worker(
       SIGNAL_QUEUE,
-      'intraday-signals',
-      '*/5 * * * 1-5',
-      async () => {
+      async (job) => {
+        if (job.name === 'manual-retrain') {
+          const symbols =
+            (job.data?.symbols as string[] | undefined) ??
+            UNIVERSE.slice(0, 10);
+          for (const symbol of symbols) {
+            try {
+              const bars = await this.loadBars(symbol, 500);
+              if (bars.length < 120) {
+                this.logger.warn(
+                  `Retrain skipped ${symbol}: only ${bars.length} bars`,
+                );
+                continue;
+              }
+              const result = (await this.train(symbol, bars, true)) as {
+                version?: string;
+                windows?: Array<{ precision?: number }>;
+              };
+              const prec =
+                result.windows && result.windows.length > 0
+                  ? result.windows.reduce(
+                      (s, w) => s + Number(w.precision ?? 0),
+                      0,
+                    ) / result.windows.length
+                  : null;
+              this.logger.log(
+                `Retrain done ${symbol} version=${result.version ?? "?"} precision=${prec?.toFixed(3) ?? "?"}`,
+              );
+            } catch (err) {
+              this.logger.warn(
+                `Retrain failed ${symbol}: ${(err as Error).message}`,
+              );
+            }
+          }
+          return;
+        }
         await this.resolveOpenSignals();
         await this.resolveShadowEvaluations();
         await this.generateSignals();
       },
-      connection,
+      { connection, concurrency: 1, lockDuration: 300_000 },
     );
+    worker.on('failed', (_job, err) =>
+      this.logger.warn(`${SIGNAL_QUEUE} failed: ${err.message}`),
+    );
+    this.queues.push(queue);
+    this.workers.push(worker);
+    await queue
+      .add(
+        'intraday-signals',
+        {},
+        {
+          repeat: { pattern: '*/5 * * * 1-5' },
+          removeOnComplete: 30,
+          removeOnFail: 30,
+        },
+      )
+      .catch((err) =>
+        this.logger.warn(`Could not schedule intraday-signals: ${err.message}`),
+      );
+    return queue;
+  }
+
+  /**
+   * Queue shadow retrains for top liquid symbols so new challengers can clear
+   * promotion gates. HTTP returns immediately — training takes minutes.
+   */
+  async enqueueRetrain(symbolCount = 10): Promise<{
+    queued: true;
+    jobId: string | undefined;
+    symbols: string[];
+  }> {
+    const symbols = UNIVERSE.slice(0, Math.min(20, Math.max(1, symbolCount)));
+    if (!this.signalQueue) {
+      for (const symbol of symbols) {
+        const bars = await this.loadBars(symbol, 500);
+        if (bars.length < 120) continue;
+        await this.train(symbol, bars, true);
+      }
+      return { queued: true, jobId: undefined, symbols };
+    }
+    const job = await this.signalQueue.add(
+      'manual-retrain',
+      { symbols },
+      { removeOnComplete: 20, removeOnFail: 20 },
+    );
+    this.logger.log(
+      `Manual retrain queued job=${job.id} symbols=${symbols.join(",")}`,
+    );
+    return { queued: true, jobId: job.id, symbols };
   }
 
   /**

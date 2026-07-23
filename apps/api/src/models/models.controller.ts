@@ -171,6 +171,13 @@ export class ModelsController {
     return this.ml.enqueueGenerateSignals();
   }
 
+  /** Queue shadow retrains for top liquid symbols (async). */
+  @Post('retrain')
+  retrain(@Query('limit') limitRaw?: string) {
+    const n = Math.min(20, Math.max(1, Number(limitRaw) || 10));
+    return this.ml.enqueueRetrain(n);
+  }
+
   @Post('resolve-signals')
   async resolve() {
     const signals = await this.ml.resolveOpenSignals();

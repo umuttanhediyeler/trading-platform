@@ -364,11 +364,31 @@ export const apiClient = {
       token,
     }),
 
-  runScan: (token: string, scanId: string) =>
-    request<{ scanId: string; rows: ScanRow[] }>(`/scans/${scanId}/run`, {
+  runScan: (
+    token: string,
+    scanId: string,
+    opts?: { limit?: number; offset?: number; timeoutMs?: number },
+  ) => {
+    const params = new URLSearchParams();
+    if (opts?.limit != null) params.set("limit", String(opts.limit));
+    if (opts?.offset != null) params.set("offset", String(opts.offset));
+    const qs = params.toString();
+    return request<{
+      scanId: string;
+      rows: ScanRow[];
+      scannedSymbols?: number;
+      batchSize?: number;
+      totalSymbols?: number;
+      offset?: number;
+      limit?: number;
+      hasMore?: boolean;
+      nextOffset?: number | null;
+    }>(`/scans/${scanId}/run${qs ? `?${qs}` : ""}`, {
       method: "POST",
       token,
-    }),
+      timeoutMs: opts?.timeoutMs ?? 25_000,
+    });
+  },
 
   signals: (token: string, status: SignalStatus | "all" = "open") =>
     request<Signal[]>(`/signals?status=${encodeURIComponent(status)}`, { token }),

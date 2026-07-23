@@ -86,10 +86,12 @@ def load_latest_active() -> dict | None:
         payload = load_artifact(version)
         if not payload:
             return None
+        meta = payload.get("meta") or {}
         return {
             "model": payload["model"],
             "version": version,
             "regime": active.get("regime"),
+            "tp_threshold": float(meta.get("tp_threshold", 0.5)),
         }
     except Exception as exc:  # noqa: BLE001
         logger.warning("load_latest_active failed: %s", exc)
