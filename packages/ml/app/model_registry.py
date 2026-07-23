@@ -33,6 +33,7 @@ class ModelRecord:
     artifact_path: str | None = None
     artifact_sha256: str | None = None
     training_samples: int | None = None
+    strategy_id: str | None = None
 
 
 class PromotionRejected(ValueError):
@@ -65,11 +66,23 @@ def register_model(record: ModelRecord) -> str:
 
         with get_session() as session:
             if record.is_active:
-                # Only one active model per regime.
-                session.query(ModelRegistry).filter(
-                    ModelRegistry.regime == record.regime,
-                    ModelRegistry.isActive.is_(True),
-                ).update({ModelRegistry.isActive: False})
+                # One active champion per portfolio slot (strategyId), else
+                # fall back to one-per-regime for legacy rows.
+                if record.strategy_id:
+                    session.query(ModelRegistry).filter(
+                        ModelRegistry.strategyId == record.strategy_id,
+                        ModelRegistry.isActive.is_(True),
+                    ).update(
+                        {
+                            ModelRegistry.isActive: False,
+                            ModelRegistry.status: "shadow",
+                        }
+                    )
+                else:
+                    session.query(ModelRegistry).filter(
+                        ModelRegistry.regime == record.regime,
+                        ModelRegistry.isActive.is_(True),
+                    ).update({ModelRegistry.isActive: False})
             session.add(
                 ModelRegistry(
                     version=record.version,
@@ -78,6 +91,7 @@ def register_model(record: ModelRecord) -> str:
                     expectancy=record.expectancy,
                     maxDrawdown=record.max_drawdown,
                     regime=record.regime,
+                    strategyId=record.strategy_id,
                     isActive=record.is_active,
                     status="active" if record.is_active else "shadow",
                     artifactPath=record.artifact_path,
@@ -155,15 +169,27 @@ def promote_model(version: str) -> dict:
                 row.status = "rejected"
                 row.promotionReason = "; ".join(failures)
             else:
-                session.query(ModelRegistry).filter(
-                    ModelRegistry.regime == row.regime,
-                    ModelRegistry.isActive.is_(True),
-                ).update(
-                    {
-                        ModelRegistry.isActive: False,
-                        ModelRegistry.status: "shadow",
-                    }
-                )
+                if getattr(row, "strategyId", None):
+                    session.query(ModelRegistry).filter(
+                        ModelRegistry.strategyId == row.strategyId,
+                        ModelRegistry.isActive.is_(True),
+                        ModelRegistry.version != row.version,
+                    ).update(
+                        {
+                            ModelRegistry.isActive: False,
+                            ModelRegistry.status: "shadow",
+                        }
+                    )
+                else:
+                    session.query(ModelRegistry).filter(
+                        ModelRegistry.regime == row.regime,
+                        ModelRegistry.isActive.is_(True),
+                    ).update(
+                        {
+                            ModelRegistry.isActive: False,
+                            ModelRegistry.status: "shadow",
+                        }
+                    )
                 row.isActive = True
                 row.status = "active"
                 row.promotedAt = datetime.now(timezone.utc)
@@ -171,6 +197,7 @@ def promote_model(version: str) -> dict:
             result = {
                 "version": row.version,
                 "regime": row.regime,
+                "strategyId": getattr(row, "strategyId", None),
                 "isActive": not failures,
                 "promoted": not failures,
                 "gateFailures": failures,
@@ -238,6 +265,7 @@ def list_models(limit: int = 50) -> list[dict]:
                     "expectancy": r.expectancy,
                     "maxDrawdown": r.maxDrawdown,
                     "regime": r.regime,
+                    "strategyId": getattr(r, "strategyId", None),
                     "isActive": r.isActive,
                     "status": r.status,
                     "artifactPath": r.artifactPath,

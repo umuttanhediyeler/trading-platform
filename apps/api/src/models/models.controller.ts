@@ -171,6 +171,12 @@ export class ModelsController {
     return this.ml.enqueueGenerateSignals();
   }
 
+  /** Queue curated 5-slot portfolio retrain (async). */
+  @Post('portfolio/retrain')
+  portfolioRetrain() {
+    return this.ml.enqueuePortfolioTrain();
+  }
+
   /** Queue shadow retrains for top liquid symbols (async). */
   @Post('retrain')
   retrain(@Query('limit') limitRaw?: string) {

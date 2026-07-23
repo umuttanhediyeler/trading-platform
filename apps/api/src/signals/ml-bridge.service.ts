@@ -48,6 +48,7 @@ export interface PredictionResponse {
   confidence: number;
   probabilities: Record<string, number>;
   regime: string;
+  strategy_id?: string | null;
   model_version: string | null;
   fallback: boolean;
   features: Record<string, number>;
@@ -294,6 +295,11 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
     const worker = new Worker(
       SIGNAL_QUEUE,
       async (job) => {
+        if (job.name === 'portfolio-train') {
+          const symbol = (job.data?.symbol as string | undefined) ?? 'AAPL';
+          await this.runPortfolioTrain(symbol);
+          return;
+        }
         if (job.name === 'manual-retrain') {
           const symbols =
             (job.data?.symbols as string[] | undefined) ??
@@ -354,6 +360,64 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
         this.logger.warn(`Could not schedule intraday-signals: ${err.message}`),
       );
     return queue;
+  }
+
+  /**
+   * Queue curated 5-slot portfolio retrain (strategy barrier variants).
+   * Uses liquid mega-cap daily bars as the shared training history.
+   */
+  async enqueuePortfolioTrain(): Promise<{
+    queued: true;
+    jobId: string | undefined;
+    symbol: string;
+  }> {
+    const symbol = 'AAPL';
+    if (!this.signalQueue) {
+      await this.runPortfolioTrain(symbol);
+      return { queued: true, jobId: undefined, symbol };
+    }
+    const job = await this.signalQueue.add(
+      'portfolio-train',
+      { symbol },
+      { removeOnComplete: 10, removeOnFail: 10 },
+    );
+    this.logger.log(`Portfolio train queued job=${job.id} symbol=${symbol}`);
+    return { queued: true, jobId: job.id, symbol };
+  }
+
+  private async runPortfolioTrain(symbol: string) {
+    const bars = await this.loadBars(symbol, 500);
+    if (bars.length < 120) {
+      throw new ServiceUnavailableException(
+        `Portfolio train needs ≥120 daily bars; got ${bars.length} for ${symbol}`,
+      );
+    }
+    const res = await fetch(`${this.baseUrl}/portfolio/train`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbol,
+        bars,
+        save_to_registry: true,
+        activate_best: true,
+        archive_others: true,
+      }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new ServiceUnavailableException(
+        `ML /portfolio/train failed: ${res.status} ${text.slice(0, 200)}`,
+      );
+    }
+    const result = (await res.json()) as {
+      slots?: Array<{ strategy_id: string; version?: string; precision?: number; promoted?: boolean }>;
+      active?: Record<string, string>;
+      archived?: number;
+    };
+    this.logger.log(
+      `Portfolio train done active=${JSON.stringify(result.active)} archived=${result.archived ?? 0}`,
+    );
+    return result;
   }
 
   /**
@@ -870,10 +934,11 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
         const bars = await this.loadBars(symbol, 120);
         if (bars.length < 60) continue;
         const prediction = await this.predict(symbol, bars);
-        const strategyId = pickStrategyId(
-          prediction.regime,
-          prediction.confidence,
-        );
+        const strategyId =
+          prediction.strategy_id &&
+          STRATEGY_RISK[prediction.strategy_id as keyof typeof STRATEGY_RISK]
+            ? (prediction.strategy_id as keyof typeof STRATEGY_RISK)
+            : pickStrategyId(prediction.regime, prediction.confidence);
         const risk = STRATEGY_RISK[strategyId] ?? STRATEGY_RISK.tb_balanced;
         const storedPrediction = await this.prisma.prediction.create({
           data: {

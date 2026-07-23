@@ -45,6 +45,7 @@ class ModelRegistry(Base):
     expectancy = Column(Float, nullable=False)
     maxDrawdown = Column(Float, nullable=False)
     regime = Column(String, nullable=False)
+    strategyId = Column(String, nullable=True)
     isActive = Column(Boolean, nullable=False, default=False)
     status = Column(String, nullable=False, default="shadow")
     artifactPath = Column(String, nullable=True)
@@ -52,6 +53,7 @@ class ModelRegistry(Base):
     trainingSamples = Column(Integer, nullable=True)
     promotedAt = Column(DateTime(timezone=True), nullable=True)
     promotionReason = Column(String, nullable=True)
+    shadowStartedAt = Column(DateTime(timezone=True), nullable=True)
 
 
 class DailyStrategySelection(Base):

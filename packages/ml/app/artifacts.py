@@ -73,26 +73,73 @@ def load_artifact(version: str) -> dict | None:
 
 def load_latest_active() -> dict | None:
     """Best-effort: load the newest active model from registry + disk."""
+    portfolio = load_portfolio_actives()
+    if not portfolio:
+        return None
+    # Prefer balanced as the default process model.
+    if "tb_balanced" in portfolio:
+        return portfolio["tb_balanced"]
+    return next(iter(portfolio.values()))
+
+
+def load_portfolio_actives() -> dict[str, dict]:
+    """Load every active portfolio champion keyed by strategyId."""
+    out: dict[str, dict] = {}
     try:
         from app.model_registry import list_models
 
-        models = list_models(limit=50)
-        active = next((m for m in models if m.get("isActive") or m.get("is_active")), None)
-        if not active:
-            return None
-        version = active.get("version")
-        if not version:
-            return None
-        payload = load_artifact(version)
-        if not payload:
-            return None
-        meta = payload.get("meta") or {}
-        return {
-            "model": payload["model"],
-            "version": version,
-            "regime": active.get("regime"),
-            "tp_threshold": float(meta.get("tp_threshold", 0.5)),
-        }
+        models = list_models(limit=100)
+        actives = [
+            m
+            for m in models
+            if (m.get("isActive") or m.get("is_active"))
+            and m.get("status") == "active"
+        ]
+        # Newest first already from list_models — keep first per strategy.
+        for active in actives:
+            strategy = active.get("strategyId") or active.get("strategy_id")
+            if not strategy:
+                # Legacy champion without a slot → treat as balanced fallback.
+                strategy = "tb_balanced"
+            if strategy in out:
+                continue
+            version = active.get("version")
+            if not version:
+                continue
+            payload = load_artifact(version)
+            if not payload or payload.get("model") is None:
+                continue
+            meta = payload.get("meta") or {}
+            out[strategy] = {
+                "model": payload["model"],
+                "version": version,
+                "regime": active.get("regime"),
+                "strategy_id": strategy,
+                "tp_threshold": float(meta.get("tp_threshold", 0.5)),
+            }
     except Exception as exc:  # noqa: BLE001
-        logger.warning("load_latest_active failed: %s", exc)
-        return None
+        logger.warning("load_portfolio_actives failed: %s", exc)
+    return out
+
+
+def archive_non_portfolio(keep_versions: set[str]) -> int:
+    """Mark every registry row not in keep_versions as archived/inactive."""
+    try:
+        from app.db import ModelRegistry, get_session
+
+        with get_session() as session:
+            rows = session.query(ModelRegistry).all()
+            n = 0
+            for row in rows:
+                if row.version in keep_versions:
+                    continue
+                if row.status == "archived" and not row.isActive:
+                    continue
+                row.isActive = False
+                row.status = "archived"
+                row.promotionReason = "outside curated 5-model portfolio"
+                n += 1
+            return n
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("archive_non_portfolio failed: %s", exc)
+        return 0

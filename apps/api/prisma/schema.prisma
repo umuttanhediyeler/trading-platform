@@ -101,8 +101,11 @@ model ModelRegistry {
   expectancy      Float
   maxDrawdown     Float
   regime          String
+  /// Portfolio slot — one of the five triple-barrier strategy profiles.
+  /// Champions are unique per strategyId (not per regime).
+  strategyId      String?
   isActive        Boolean                    @default(false)
-  status          String                     @default("shadow") // shadow | active | rejected
+  status          String                     @default("shadow") // shadow | active | rejected | archived
   artifactPath    String?
   artifactSha256  String?
   trainingSamples Int?
@@ -115,6 +118,7 @@ model ModelRegistry {
   shadowEvaluations ShadowEvaluation[]
 
   @@index([regime, isActive])
+  @@index([strategyId, isActive])
 }
 
 model Prediction {

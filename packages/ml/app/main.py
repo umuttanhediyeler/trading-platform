@@ -26,9 +26,11 @@ from prometheus_client import (
 from pydantic import BaseModel, Field
 
 from app.artifacts import (
+    archive_non_portfolio,
     artifact_sha256,
     load_artifact,
     load_latest_active,
+    load_portfolio_actives,
     save_artifact,
 )
 from app.features import FEATURE_COLUMNS, compute_features
@@ -38,9 +40,11 @@ from app.model_registry import (
     PromotionRejected,
     list_models,
     make_version,
+    promote_model,
     register_model,
 )
 from app.nightly_job import run_nightly
+from app.portfolio import PORTFOLIO_SLOTS, pick_strategy_id, train_slot
 from app.regime import classify_regime
 from app.train import HAS_LIGHTGBM, train_from_bars
 
@@ -61,14 +65,57 @@ app = FastAPI(title="ML Service", version="0.1.0")
 
 INT_TO_LABEL = {v: k for k, v in LABEL_TO_INT.items()}
 
-# Latest fitted model kept in memory; /predict falls back to a neutral
-# heuristic when no model has been trained yet in this process.
+# Portfolio champions keyed by strategyId. `default` is the balanced fallback
+# used when a slot is empty.
 _state: dict = {
+    "by_strategy": {},  # strategyId -> {model, version, regime, tp_threshold}
     "model": None,
     "version": None,
     "regime": None,
     "tp_threshold": 0.5,
+    "strategy_id": None,
 }
+
+
+def _set_default_from_portfolio() -> None:
+    by = _state["by_strategy"]
+    preferred = by.get("tb_balanced") or (next(iter(by.values())) if by else None)
+    if preferred is None:
+        _state.update(
+            model=None,
+            version=None,
+            regime=None,
+            tp_threshold=0.5,
+            strategy_id=None,
+        )
+        return
+    _state.update(
+        model=preferred["model"],
+        version=preferred["version"],
+        regime=preferred.get("regime"),
+        tp_threshold=preferred.get("tp_threshold", 0.5),
+        strategy_id=preferred.get("strategy_id"),
+    )
+
+
+def _resolve_production_model(
+    regime: str, confidence_hint: float = 0.65
+) -> tuple[Any, str | None, float, str | None]:
+    """Pick the portfolio champion for this regime; fall back to balanced."""
+    strategy = pick_strategy_id(regime, confidence_hint)
+    by = _state["by_strategy"]
+    entry = by.get(strategy) or by.get("tb_balanced")
+    if entry is None and by:
+        entry = next(iter(by.values()))
+    if entry is None:
+        return _state["model"], _state["version"], float(_state.get("tp_threshold") or 0.5), None
+    return (
+        entry["model"],
+        entry["version"],
+        float(entry.get("tp_threshold") or 0.5),
+        entry.get("strategy_id") or strategy,
+    )
+
 
 # Small LRU of shadow (challenger) models loaded on demand for parallel
 # evaluation. Kept strictly separate from _state so shadow inference can never
@@ -117,9 +164,20 @@ def metrics() -> PlainTextResponse:
 
 @app.on_event("startup")
 def _restore_model() -> None:
+    portfolio = load_portfolio_actives()
+    if portfolio:
+        _state["by_strategy"] = portfolio
+        _set_default_from_portfolio()
+        logger.info(
+            "Restored portfolio champions: %s",
+            {k: v.get("version") for k, v in portfolio.items()},
+        )
+        return
     restored = load_latest_active()
     if restored:
-        _state.update(restored)
+        strategy = restored.get("strategy_id") or "tb_balanced"
+        _state["by_strategy"] = {strategy: {**restored, "strategy_id": strategy}}
+        _set_default_from_portfolio()
         logger.info(
             "Restored model %s (regime=%s) from artifact store",
             restored.get("version"),
@@ -164,6 +222,16 @@ class TrainRequest(BarsPayload):
     save_to_registry: bool = True
     # Shadow models are registered inactive until explicitly promoted.
     shadow: bool = True
+    strategy_id: str | None = None
+
+
+class PortfolioTrainRequest(BarsPayload):
+    """Train all five portfolio slots on the same daily bar history."""
+
+    save_to_registry: bool = True
+    # Soft-activate best-of-slot when hard gates fail but expectancy > 0.
+    activate_best: bool = True
+    archive_others: bool = True
 
 
 @app.get("/health")
@@ -206,10 +274,8 @@ def predict(payload: PredictRequest) -> dict:
         name: float(latest[name]) for name in FEATURE_COLUMNS
     }
     feature_timestamp = pd.Timestamp(bars["timestamp"].iloc[-1]).isoformat()
-    model = _state["model"]
-    model_version = _state["version"]
-    tp_threshold = float(_state.get("tp_threshold") or 0.5)
-    if payload.model_version and payload.model_version != _state["version"]:
+    model, model_version, tp_threshold, strategy_id = _resolve_production_model(regime)
+    if payload.model_version and payload.model_version != model_version:
         shadow = _load_shadow_model(payload.model_version)
         if shadow is None:
             raise HTTPException(
@@ -218,6 +284,7 @@ def predict(payload: PredictRequest) -> dict:
             )
         model, tp_threshold = shadow
         model_version = payload.model_version
+        strategy_id = None
     if model is None:
         # No trained model in this process yet: return a neutral, clearly
         # flagged response instead of failing so the caller can degrade
@@ -229,6 +296,7 @@ def predict(payload: PredictRequest) -> dict:
             "confidence": 0.0,
             "probabilities": {"tp": 0.0, "sl": 0.0, "timeout": 1.0},
             "regime": regime,
+            "strategy_id": strategy_id,
             "model_version": None,
             "fallback": True,
             "features": feature_snapshot,
@@ -241,6 +309,20 @@ def predict(payload: PredictRequest) -> dict:
     probabilities = {label: float(p) for label, p in zip(classes, proba)}
     for label in ("tp", "sl", "timeout"):
         probabilities.setdefault(label, 0.0)
+    # Re-pick strategy with actual confidence so barriers stay aligned.
+    if strategy_id and payload.model_version is None:
+        refined = pick_strategy_id(regime, float(probabilities.get("tp", 0.0)))
+        if refined != strategy_id and refined in _state["by_strategy"]:
+            entry = _state["by_strategy"][refined]
+            model = entry["model"]
+            model_version = entry["version"]
+            tp_threshold = float(entry.get("tp_threshold") or 0.5)
+            strategy_id = refined
+            proba = model.predict_proba(X)[0]
+            classes = [INT_TO_LABEL[int(c)] for c in model.classes_]
+            probabilities = {label: float(p) for label, p in zip(classes, proba)}
+            for label in ("tp", "sl", "timeout"):
+                probabilities.setdefault(label, 0.0)
     best = _choose_label(probabilities, tp_threshold)
     PREDICTIONS_TOTAL.labels(fallback="false").inc()
     return {
@@ -249,6 +331,7 @@ def predict(payload: PredictRequest) -> dict:
         "confidence": probabilities[best],
         "probabilities": probabilities,
         "regime": regime,
+        "strategy_id": strategy_id,
         "model_version": model_version,
         "fallback": False,
         "features": feature_snapshot,
@@ -276,7 +359,9 @@ def train(payload: TrainRequest) -> dict:
         )
 
     last = results[-1]
-    version = make_version()
+    version = make_version(
+        f"pf-{payload.strategy_id}" if payload.strategy_id else "model"
+    )
     artifact_path = save_artifact(
         version,
         last.model,
@@ -284,18 +369,23 @@ def train(payload: TrainRequest) -> dict:
             "regime": last.regime,
             "shadow": payload.shadow,
             "tp_threshold": last.tp_threshold,
+            "strategy_id": payload.strategy_id,
         },
     )
     artifact_hash = artifact_sha256(version)
     # A shadow model must never serve production predictions. Only explicitly
     # active training runs or successful promotion can replace process state.
     if not payload.shadow:
-        _state.update(
-            model=last.model,
-            version=version,
-            regime=last.regime,
-            tp_threshold=last.tp_threshold,
-        )
+        strategy = payload.strategy_id or "tb_balanced"
+        entry = {
+            "model": last.model,
+            "version": version,
+            "regime": last.regime,
+            "strategy_id": strategy,
+            "tp_threshold": last.tp_threshold,
+        }
+        _state["by_strategy"][strategy] = entry
+        _set_default_from_portfolio()
 
     registered_to = None
     if payload.save_to_registry:
@@ -311,6 +401,7 @@ def train(payload: TrainRequest) -> dict:
                 artifact_path=artifact_path,
                 artifact_sha256=artifact_hash,
                 training_samples=sum(r.n_test for r in results),
+                strategy_id=payload.strategy_id,
             )
         )
 
@@ -318,6 +409,7 @@ def train(payload: TrainRequest) -> dict:
     return {
         "version": version,
         "shadow": payload.shadow,
+        "strategy_id": payload.strategy_id,
         "artifact": artifact_path,
         "artifact_sha256": artifact_hash,
         "windows": [r.to_dict() for r in results],
@@ -340,9 +432,7 @@ def models(limit: int = 50) -> dict:
 
 @app.post("/models/{version}/promote")
 def promote(version: str) -> dict:
-    """Promote a shadow model to active for its regime."""
-    from app.model_registry import promote_model
-
+    """Promote a shadow model to active for its portfolio slot / regime."""
     try:
         result = promote_model(version)
     except PromotionRejected as exc:
@@ -355,10 +445,164 @@ def promote(version: str) -> dict:
     artifact = load_artifact(version)
     if artifact and artifact.get("model") is not None:
         meta = artifact.get("meta") or {}
-        _state.update(
-            model=artifact["model"],
-            version=version,
-            regime=result.get("regime"),
-            tp_threshold=float(meta.get("tp_threshold", 0.5)),
-        )
+        strategy = result.get("strategyId") or meta.get("strategy_id") or "tb_balanced"
+        entry = {
+            "model": artifact["model"],
+            "version": version,
+            "regime": result.get("regime"),
+            "strategy_id": strategy,
+            "tp_threshold": float(meta.get("tp_threshold", 0.5)),
+        }
+        _state["by_strategy"][strategy] = entry
+        _set_default_from_portfolio()
     return result
+
+
+def _soft_activate(version: str, strategy_id: str) -> dict:
+    """Activate best-of-slot when hard gates fail but the model is usable."""
+    from datetime import datetime, timezone
+
+    from app.db import ModelRegistry, get_session
+
+    with get_session() as session:
+        row = (
+            session.query(ModelRegistry)
+            .filter(ModelRegistry.version == version)
+            .one_or_none()
+        )
+        if row is None:
+            raise ValueError(f"model version '{version}' not found")
+        if float(row.expectancy or 0) <= 0:
+            raise PromotionRejected(version, ["expectancy must exceed 0 for soft activate"])
+        if int(row.trainingSamples or 0) < 80:
+            raise PromotionRejected(version, ["training samples below 80 for soft activate"])
+        session.query(ModelRegistry).filter(
+            ModelRegistry.strategyId == strategy_id,
+            ModelRegistry.isActive.is_(True),
+            ModelRegistry.version != version,
+        ).update(
+            {
+                ModelRegistry.isActive: False,
+                ModelRegistry.status: "shadow",
+            }
+        )
+        row.strategyId = strategy_id
+        row.isActive = True
+        row.status = "active"
+        row.promotedAt = datetime.now(timezone.utc)
+        row.promotionReason = "portfolio best-available (soft activate)"
+        return {
+            "version": version,
+            "regime": row.regime,
+            "strategyId": strategy_id,
+            "isActive": True,
+            "promoted": True,
+            "soft": True,
+            "gateFailures": [],
+        }
+
+
+@app.post("/portfolio/train")
+def portfolio_train(payload: PortfolioTrainRequest) -> dict:
+    """Train and activate the curated 5-model portfolio on one bar history."""
+    bars = payload.to_frame()
+    slots: list[dict] = []
+    keep_versions: set[str] = set()
+
+    for strategy_id in PORTFOLIO_SLOTS:
+        try:
+            trained = train_slot(strategy_id, bars)
+        except ValueError as exc:
+            slots.append(
+                {
+                    "strategy_id": strategy_id,
+                    "error": str(exc),
+                    "promoted": False,
+                }
+            )
+            continue
+
+        version = make_version(f"pf-{strategy_id.replace('tb_', '')}")
+        artifact_path = save_artifact(
+            version,
+            trained["model"],
+            meta={
+                "regime": trained["regime"],
+                "shadow": False,
+                "tp_threshold": trained["tp_threshold"],
+                "strategy_id": strategy_id,
+            },
+        )
+        artifact_hash = artifact_sha256(version)
+        if payload.save_to_registry:
+            register_model(
+                ModelRecord(
+                    version=version,
+                    precision=trained["precision"],
+                    recall=trained["recall"],
+                    expectancy=trained["expectancy"],
+                    max_drawdown=trained["max_drawdown"],
+                    regime=trained["regime"],
+                    is_active=False,
+                    artifact_path=artifact_path,
+                    artifact_sha256=artifact_hash,
+                    training_samples=trained["training_samples"],
+                    strategy_id=strategy_id,
+                )
+            )
+
+        promoted = False
+        soft = False
+        gate_failures: list[str] = []
+        try:
+            promote_model(version)
+            promoted = True
+        except PromotionRejected as exc:
+            gate_failures = list(exc.reasons)
+            if payload.activate_best:
+                try:
+                    _soft_activate(version, strategy_id)
+                    promoted = True
+                    soft = True
+                except (PromotionRejected, ValueError) as soft_exc:
+                    gate_failures.append(str(soft_exc))
+
+        if promoted:
+            keep_versions.add(version)
+            entry = {
+                "model": trained["model"],
+                "version": version,
+                "regime": trained["regime"],
+                "strategy_id": strategy_id,
+                "tp_threshold": trained["tp_threshold"],
+            }
+            _state["by_strategy"][strategy_id] = entry
+
+        slots.append(
+            {
+                "strategy_id": strategy_id,
+                "version": version,
+                "precision": trained["precision"],
+                "recall": trained["recall"],
+                "expectancy": trained["expectancy"],
+                "max_drawdown": trained["max_drawdown"],
+                "training_samples": trained["training_samples"],
+                "regime": trained["regime"],
+                "promoted": promoted,
+                "soft": soft,
+                "gateFailures": gate_failures,
+                "windows": trained["windows"],
+            }
+        )
+        TRAINS_TOTAL.inc()
+
+    _set_default_from_portfolio()
+    archived = 0
+    if payload.archive_others and keep_versions:
+        archived = archive_non_portfolio(keep_versions)
+
+    return {
+        "slots": slots,
+        "active": {k: v.get("version") for k, v in _state["by_strategy"].items()},
+        "archived": archived,
+    }
