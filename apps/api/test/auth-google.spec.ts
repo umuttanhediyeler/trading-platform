@@ -63,6 +63,9 @@ describe('AuthService Google login', () => {
         create: jest.fn().mockResolvedValue({
           id: 'u-google',
           email: 'verified@example.com',
+          executionMode: 'manual',
+          subscription: { planTier: 'free' },
+          riskSettings: { killSwitchActive: false },
         }),
       },
     };
@@ -75,15 +78,24 @@ describe('AuthService Google login', () => {
     await expect(service.loginWithGoogle('valid-token')).resolves.toEqual({
       accessToken: 'access-token',
       refreshToken: 'refresh-token',
+      user: {
+        id: 'u-google',
+        email: 'verified@example.com',
+        executionMode: 'manual',
+        planTier: 'free',
+        killSwitchActive: false,
+      },
     });
     expect(prisma.user.findUnique).toHaveBeenCalledWith({
       where: { email: 'verified@example.com' },
+      include: { subscription: true, riskSettings: true },
     });
     expect(prisma.user.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         email: 'verified@example.com',
         provider: 'google',
       }),
+      include: { subscription: true, riskSettings: true },
     });
   });
 

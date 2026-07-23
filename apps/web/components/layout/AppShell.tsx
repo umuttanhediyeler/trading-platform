@@ -45,6 +45,17 @@ export function AppShell({
 
   useEffect(() => {
     if (!token) return;
+    // Session already carries plan/mode — only re-sync /me every 5 minutes.
+    const cacheKey = `apex:me-sync:${token.slice(-12)}`;
+    try {
+      const last = Number(sessionStorage.getItem(cacheKey) ?? 0);
+      if (last && Date.now() - last < 5 * 60_000) {
+        liveSynced.current = true;
+        return;
+      }
+    } catch {
+      // sessionStorage may be unavailable
+    }
     let cancelled = false;
     liveSynced.current = false;
     apiClient
@@ -64,6 +75,11 @@ export function AppShell({
         }
         setKillSwitchActive(Boolean(profile.riskSettings?.killSwitchActive));
         liveSynced.current = true;
+        try {
+          sessionStorage.setItem(cacheKey, String(Date.now()));
+        } catch {
+          // ignore
+        }
       })
       .catch(() => undefined);
     return () => {

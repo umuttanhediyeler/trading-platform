@@ -17,7 +17,7 @@ import { killSwitchTriggersTotal } from '../metrics/counters';
 import { PrismaService } from '../prisma/prisma.service';
 import { ExecutionGateway } from './execution.gateway';
 
-const DEFAULT_MAX_TOTAL_EXPOSURE_PCT = 50;
+const DEFAULT_MAX_TOTAL_EXPOSURE_PCT = 70;
 
 interface LedgerFill {
   symbol: string;
@@ -429,11 +429,28 @@ export class RiskGuardService {
     userId: string,
     excludeClientOrderId?: string,
   ): Promise<number> {
+    const terminalBroker = [
+      'filled',
+      'canceled',
+      'cancelled',
+      'expired',
+      'rejected',
+      'done_for_day',
+    ];
     const rows = await this.prisma.brokerOrderLedger.findMany({
       where: {
         userId,
+        // Only unsettled BUY notional — filled buys live in positions already;
+        // sells are exits and must not inflate exposure.
+        side: 'buy',
         OR: [
-          { status: 'submitted' },
+          {
+            status: 'submitted',
+            OR: [
+              { brokerStatus: null },
+              { brokerStatus: { notIn: terminalBroker } },
+            ],
+          },
           // Only count pending rows that actually reached the broker —
           // abandoned local reservations must not block new trades.
           { status: 'pending', brokerOrderId: { not: null } },

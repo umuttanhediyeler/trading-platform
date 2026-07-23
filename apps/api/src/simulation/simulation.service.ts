@@ -1,9 +1,14 @@
 import {
   BadRequestException,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import {
+  MARKET_DATA_PROVIDER,
+  MarketDataProvider,
+} from '../market-data/providers/market-data-provider.interface';
 import { QuoteCacheService } from '../market-data/quote-cache.service';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -22,6 +27,8 @@ export class SimulationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly quoteCache: QuoteCacheService,
+    @Inject(MARKET_DATA_PROVIDER)
+    private readonly marketData: MarketDataProvider,
   ) {}
 
   async getAccount(userId: string) {
@@ -41,10 +48,9 @@ export class SimulationService {
     });
     const openPositions = await Promise.all(
       openOrders.map(async (order) => {
-        const cached = await this.quoteCache
-          .getQuote(order.symbol)
-          .catch(() => null);
-        const currentPrice = cached?.quote.price ?? Number(order.entryPrice);
+        const currentPrice =
+          (await this.resolveMarkPrice(order.symbol)) ??
+          Number(order.entryPrice);
         const entryPrice = Number(order.entryPrice);
         const direction = order.side === 'buy' ? 1 : -1;
         return {
@@ -171,5 +177,21 @@ export class SimulationService {
       }),
     ]);
     return closed;
+  }
+
+  /** Cache first, REST fallback — keeps day PnL marks live off the WS cap. */
+  private async resolveMarkPrice(symbol: string): Promise<number | null> {
+    const cached = await this.quoteCache.getQuote(symbol).catch(() => null);
+    if (cached?.quote?.price && Number.isFinite(cached.quote.price)) {
+      return cached.quote.price;
+    }
+    try {
+      const quote = await this.marketData.getQuote(symbol.toUpperCase());
+      if (!quote?.price || !Number.isFinite(quote.price)) return null;
+      await this.quoteCache.setQuote(quote).catch(() => undefined);
+      return quote.price;
+    } catch {
+      return null;
+    }
   }
 }

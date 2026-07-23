@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { FadeIn } from "@/components/reactbits/FadeIn";
 import { SpotlightCard } from "@/components/reactbits/SpotlightCard";
-import { apiClient } from "@/lib/api-client";
+import { apiClient, networkErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 
 type ModelsResponse = Awaited<ReturnType<typeof apiClient.listModels>>;
@@ -65,12 +65,18 @@ export default function ModelsPage() {
     setNotice(null);
     try {
       const result = await apiClient.generateSignals(session.accessToken);
-      setNotice(
-        `${result.predictions} tahmin kaydedildi, ${result.signalsCreated} yeni sinyal oluşturuldu.`,
-      );
+      if (result.queued) {
+        setNotice(
+          "Sinyal üretimi kuyruğa alındı. Birkaç dakika içinde tamamlanır; sayfayı yenileyerek sonuçları kontrol edin.",
+        );
+      } else {
+        setNotice(
+          `${result.predictions ?? 0} tahmin kaydedildi, ${result.signalsCreated ?? 0} yeni sinyal oluşturuldu.`,
+        );
+      }
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Sinyal üretimi başarısız");
+      setError(networkErrorMessage(err, "Sinyal üretimi başarısız"));
     } finally {
       setBusy(null);
     }

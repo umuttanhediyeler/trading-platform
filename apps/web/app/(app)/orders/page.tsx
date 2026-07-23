@@ -26,7 +26,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { EmptyState, LoadingBlock } from "@/components/shared/states";
-import { ApiError, apiClient } from "@/lib/api-client";
+import { ApiError, apiClient, networkErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import type { BrokerOrderLedgerEntry } from "@/lib/types";
 import { RefreshCw } from "lucide-react";
@@ -126,7 +126,7 @@ export default function OrdersPage() {
           setError(null);
         } else {
           const raw = err instanceof Error ? err.message : "Emirler yüklenemedi";
-          setError(raw === "Failed to fetch" ? "API’ye bağlanılamadı — sunucu ayakta mı?" : raw);
+          setError(networkErrorMessage(err, raw));
         }
       } finally {
         if (!opts?.silent) setLoading(false);
@@ -149,11 +149,16 @@ export default function OrdersPage() {
   }, [load, session?.accessToken]);
 
   const stats = useMemo(() => {
-    const total = orders.length;
-    const pending = orders.filter((o) => o.status === "pending").length;
-    const filled = orders.filter((o) => o.status === "submitted").length;
-    const failed = orders.filter((o) => o.status === "failed").length;
-    return { total, pending, filled, failed };
+    // Ghost "pending" rows without a broker id are local reservations that
+    // risk-reject and disappear — don't inflate Bekleyen.
+    const visible = orders.filter(
+      (o) => !(o.status === "pending" && !o.brokerOrderId),
+    );
+    const total = visible.length;
+    const pending = visible.filter((o) => o.status === "pending").length;
+    const filled = visible.filter((o) => o.status === "submitted").length;
+    const failed = visible.filter((o) => o.status === "failed").length;
+    return { total, pending, filled, failed, visible };
   }, [orders]);
 
   async function reconcile() {
@@ -282,7 +287,7 @@ export default function OrdersPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {orders.length === 0 ? (
+            {stats.visible.length === 0 ? (
               <EmptyState
                 title="Henüz broker emri yok"
                 description="Full auto veya tek tık ile emir gönderildiğinde burada listelenir. Simülasyon işlemleri için Simülasyon sayfasına bakın."
@@ -308,7 +313,7 @@ export default function OrdersPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {orders.map((order) => (
+                      {stats.visible.map((order) => (
                         <TableRow key={order.id}>
                           <TableCell>
                             <SymbolWithLogo symbol={order.symbol} size="sm" />

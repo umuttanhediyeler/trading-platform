@@ -45,7 +45,11 @@ type RequestOptions = {
   body?: unknown;
   token?: string | null;
   signal?: AbortSignal;
+  /** Override default request timeout (ms). */
+  timeoutMs?: number;
 };
+
+const DEFAULT_TIMEOUT_MS = 12_000;
 
 function getBaseUrl() {
   // Absolute API origin from env (e.g. http://localhost:3001 locally,
@@ -62,7 +66,7 @@ function getBaseUrl() {
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = "GET", body, token, signal } = options;
+  const { method = "GET", body, token, signal, timeoutMs = DEFAULT_TIMEOUT_MS } = options;
   const headers: HeadersInit = {
     Accept: "application/json",
   };
@@ -74,13 +78,32 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const res = await fetch(`${getBaseUrl()}${path}`, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    signal,
-    cache: "no-store",
-  });
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  signal?.addEventListener("abort", onAbort);
+  const timer =
+    timeoutMs > 0
+      ? setTimeout(() => controller.abort(), timeoutMs)
+      : undefined;
+
+  let res: Response;
+  try {
+    res = await fetch(`${getBaseUrl()}${path}`, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+      cache: "no-store",
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new ApiError(`Request timed out after ${timeoutMs}ms`, 408);
+    }
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+  }
 
   const text = await res.text();
   let parsed: unknown = null;
@@ -105,6 +128,20 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   return parsed as T;
 }
 
+/** Safari uses "Load failed"; Chrome "Failed to fetch" — both mean network/API down. */
+export function networkErrorMessage(err: unknown, fallback: string): string {
+  const raw = err instanceof Error ? err.message : fallback;
+  if (
+    raw === "Failed to fetch" ||
+    raw === "Load failed" ||
+    raw === "NetworkError when attempting to fetch resource." ||
+    /networkerror|load failed|failed to fetch/i.test(raw)
+  ) {
+    return "API’ye bağlanılamadı — sayfayı yenileyin. Sorun sürerse sunucu kısa süreliğine kapalı olabilir.";
+  }
+  return raw || fallback;
+}
+
 export const apiClient = {
   register: (email: string, password: string) =>
     request<{ id: string; email: string }>("/auth/register", {
@@ -112,22 +149,53 @@ export const apiClient = {
       body: { email, password },
     }),
 
-  login: (email: string, password: string) =>
-    request<{ accessToken: string; refreshToken?: string }>("/auth/login", {
+  login: (email: string, password: string, rememberMe = true) =>
+    request<{
+      accessToken: string;
+      refreshToken?: string;
+      user: {
+        id: string;
+        email: string;
+        executionMode: string;
+        planTier: string;
+        killSwitchActive: boolean;
+      };
+    }>("/auth/login", {
       method: "POST",
-      body: { email, password },
+      body: { email, password, rememberMe },
     }),
 
-  googleLogin: (idToken: string) =>
-    request<{ accessToken: string; refreshToken?: string }>("/auth/google", {
+  googleLogin: (idToken: string, rememberMe = true) =>
+    request<{
+      accessToken: string;
+      refreshToken?: string;
+      user: {
+        id: string;
+        email: string;
+        executionMode: string;
+        planTier: string;
+        killSwitchActive: boolean;
+      };
+    }>("/auth/google", {
       method: "POST",
-      body: { idToken },
+      body: { idToken, rememberMe },
     }),
 
   refresh: (refreshToken: string) =>
-    request<{ accessToken: string; refreshToken?: string }>("/auth/refresh", {
+    request<{
+      accessToken: string;
+      refreshToken?: string;
+      user?: {
+        id: string;
+        email: string;
+        executionMode: string;
+        planTier: string;
+        killSwitchActive: boolean;
+      };
+    }>("/auth/refresh", {
       method: "POST",
       body: { refreshToken },
+      timeoutMs: 8_000,
     }),
 
   listModels: (token: string) =>
@@ -210,10 +278,12 @@ export const apiClient = {
 
   generateSignals: (token: string) =>
     request<{
-      predictions: number;
-      signalsCreated: number;
-      shadowPredictions: number;
-      shadowEvaluations: number;
+      queued?: boolean;
+      jobId?: string;
+      predictions?: number;
+      signalsCreated?: number;
+      shadowPredictions?: number;
+      shadowEvaluations?: number;
     }>("/models/generate-signals", {
       method: "POST",
       token,

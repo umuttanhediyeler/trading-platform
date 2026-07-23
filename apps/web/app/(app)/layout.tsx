@@ -5,7 +5,13 @@ import { AppShell } from "@/components/layout/AppShell";
 import type { ExecutionMode, PlanTier } from "@/lib/types";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
-  const session = await getServerSession(authOptions);
+  // Soft-fail: hung API refresh must not turn every navigation into ISE.
+  let session = null;
+  try {
+    session = await getServerSession(authOptions);
+  } catch {
+    redirect("/login");
+  }
   if (!session?.accessToken) {
     redirect("/login");
   }

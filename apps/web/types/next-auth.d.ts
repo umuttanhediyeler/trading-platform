@@ -17,6 +17,7 @@ declare module "next-auth" {
     planTier?: string;
     executionMode?: string;
     killSwitchActive?: boolean;
+    rememberMe?: boolean;
   }
 }
 
@@ -27,5 +28,7 @@ declare module "next-auth/jwt" {
     planTier?: string;
     executionMode?: string;
     killSwitchActive?: boolean;
+    rememberMe?: boolean;
+    maxAge?: number;
   }
 }

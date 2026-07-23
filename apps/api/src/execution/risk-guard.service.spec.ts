@@ -111,8 +111,8 @@ describe('RiskGuardService (broker-aware)', () => {
     });
 
     it('rejects an order that would push total exposure past the cap', async () => {
-      // Cap: 50% of $10,000 = $5,000. Positions $3,000 + open order $1,500
-      // + new order $1,000 = $5,500.
+      // Cap: 70% of $10,000 = $7,000. Positions $3,000 + open order $1,500
+      // + new order $3,000 = $7,500.
       (adapter.getPositions as jest.Mock).mockResolvedValue([
         { symbol: 'MSFT', quantity: 10, avgEntryPrice: 300, marketValue: 3000, unrealizedPnl: 0 },
       ]);
@@ -120,6 +120,7 @@ describe('RiskGuardService (broker-aware)', () => {
         {
           id: 'l-1',
           symbol: 'AAPL',
+          side: 'buy',
           clientOrderId: 'other-1',
           quantity: 10,
           limitPrice: 150,
@@ -131,7 +132,7 @@ describe('RiskGuardService (broker-aware)', () => {
         service.assertBrokerOrderAllowed('user-1', credentials, {
           symbol: 'AAPL',
           side: 'buy',
-          quantity: 10,
+          quantity: 30,
           type: 'market',
           clientOrderId: 'c-2',
           entryPriceHint: 100,

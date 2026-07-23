@@ -63,6 +63,8 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(MlBridgeService.name);
   private queues: Queue[] = [];
   private workers: Worker[] = [];
+  /** Kept for one-shot manual generate from the Models UI (avoids Caddy 60s timeout). */
+  private signalQueue?: Queue;
 
   constructor(
     private readonly config: ConfigService,
@@ -273,7 +275,7 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
       connection,
     );
 
-    await this.schedule(
+    this.signalQueue = await this.schedule(
       SIGNAL_QUEUE,
       'intraday-signals',
       '*/5 * * * 1-5',
@@ -284,6 +286,31 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
       },
       connection,
     );
+  }
+
+  /**
+   * Queue a full signal cycle instead of awaiting it on the HTTP request.
+   * Manual "Sinyal üret" was timing out at the reverse proxy (~60s) while the
+   * universe loop often needs several minutes.
+   */
+  async enqueueGenerateSignals(): Promise<{
+    queued: true;
+    jobId: string | undefined;
+  }> {
+    if (!this.signalQueue) {
+      // Workers disabled (e.g. tests) — still run inline so the endpoint works.
+      await this.resolveOpenSignals();
+      await this.resolveShadowEvaluations();
+      await this.generateSignals();
+      return { queued: true, jobId: undefined };
+    }
+    const job = await this.signalQueue.add(
+      'manual-generate',
+      { source: 'manual' },
+      { removeOnComplete: 30, removeOnFail: 30 },
+    );
+    this.logger.log(`Manual signal generation queued job=${job.id}`);
+    return { queued: true, jobId: job.id };
   }
 
   /**
@@ -785,20 +812,17 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
           shadowEvaluations += shadowResult.evaluations;
         }
 
-        const tradeSide: 'buy' | 'sell' | null =
-          prediction.prediction === 'tp'
-            ? 'buy'
-            : prediction.prediction === 'sl'
-              ? 'sell'
-              : null;
+        // Model labels are long-trade outcomes (tp / sl / timeout), not
+        // direction. Predicting "sl" means "don't enter" — never invent a short.
         if (
           prediction.fallback ||
           !prediction.model_version ||
-          !tradeSide ||
+          prediction.prediction !== 'tp' ||
           prediction.confidence < minConfidence
         ) {
           continue;
         }
+        const tradeSide = 'buy' as const;
         const activeModel = await this.prisma.modelRegistry.findUnique({
           where: { version: prediction.model_version },
           select: { isActive: true, status: true, regime: true },
@@ -895,6 +919,8 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
             equity,
             entryPrice: entry,
             stopPrice: userTargets.stopPrice,
+            targetPrice: userTargets.targetPrice,
+            confidence: prediction.confidence,
             maxRiskPerTrade: maxRisk,
           });
           await this.simulation
@@ -962,9 +988,13 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
     pattern: string,
     handler: () => Promise<void>,
     connection: ReturnType<MlBridgeService['connectionOptions']>,
-  ) {
+  ): Promise<Queue> {
     const queue = new Queue(queueName, { connection });
-    const worker = new Worker(queueName, async () => handler(), { connection });
+    const worker = new Worker(queueName, async () => handler(), {
+      connection,
+      concurrency: 1,
+      lockDuration: 120_000,
+    });
     worker.on('failed', (_job, err) =>
       this.logger.warn(`${queueName} failed: ${err.message}`),
     );
@@ -975,6 +1005,7 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
       .catch((err) =>
         this.logger.warn(`Could not schedule ${jobName}: ${err.message}`),
       );
+    return queue;
   }
 
   private connectionOptions() {

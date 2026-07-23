@@ -87,16 +87,16 @@ describe('BrokerOrderService', () => {
     );
   });
 
-  it('reserves the idempotency key before risk checks and broker submission', async () => {
+  it('runs risk preflight before reserving, then re-checks daily limit after reserve', async () => {
     const events: string[] = [];
-    prisma.brokerOrderLedger.create.mockImplementation(async () => {
-      events.push('reserve');
-    });
     riskGuard.assertCanTrade.mockImplementation(async () => {
       events.push('risk');
     });
     riskGuard.assertBrokerOrderAllowed.mockImplementation(async () => {
       events.push('broker-risk');
+    });
+    prisma.brokerOrderLedger.create.mockImplementation(async () => {
+      events.push('reserve');
     });
     (adapter.placeOrder as jest.Mock).mockImplementation(async () => {
       events.push('broker');
@@ -106,7 +106,7 @@ describe('BrokerOrderService', () => {
     await expect(
       service.submit('user-1', credentials, request, { source: 'one_click' }),
     ).resolves.toEqual(response);
-    expect(events).toEqual(['reserve', 'risk', 'broker-risk', 'broker']);
+    expect(events).toEqual(['risk', 'broker-risk', 'reserve', 'risk', 'broker']);
     expect(prisma.brokerOrderLedger.update).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -157,14 +157,29 @@ describe('BrokerOrderService', () => {
     expect(prisma.brokerOrderLedger.create).not.toHaveBeenCalled();
   });
 
-  it('removes the ledger row on expected risk rejections instead of marking failed', async () => {
+  it('rejects risk before creating a ledger row (no Bekleyen flash)', async () => {
     riskGuard.assertCanTrade.mockRejectedValue(
-      new ForbiddenException('Daily trade limit reached (5)'),
+      new ForbiddenException('Total exposure would exceed 50%'),
     );
 
     await expect(
       service.submit('user-1', credentials, request, { source: 'one_click' }),
     ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.brokerOrderLedger.create).not.toHaveBeenCalled();
+    expect(prisma.brokerOrderLedger.delete).not.toHaveBeenCalled();
+  });
+
+  it('removes the ledger row if post-reserve daily-limit rejects', async () => {
+    riskGuard.assertCanTrade
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(
+        new ForbiddenException('Daily trade limit reached (5)'),
+      );
+
+    await expect(
+      service.submit('user-1', credentials, request, { source: 'one_click' }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.brokerOrderLedger.create).toHaveBeenCalled();
     expect(prisma.brokerOrderLedger.delete).toHaveBeenCalled();
     expect(prisma.brokerOrderLedger.update).not.toHaveBeenCalled();
   });

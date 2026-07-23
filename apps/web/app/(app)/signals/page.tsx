@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { FadeIn } from "@/components/reactbits/FadeIn";
 import { AnimatedList } from "@/components/reactbits/AnimatedList";
 import { SpecularButton } from "@/components/reactbits/SpecularButton";
-import { apiClient } from "@/lib/api-client";
+import { apiClient, networkErrorMessage } from "@/lib/api-client";
 import { useExecutionStore } from "@/lib/store";
 import { hasEntitlement } from "@/lib/entitlements";
 import { connectSocket, onWsEvent } from "@/lib/ws-client";
@@ -37,17 +37,22 @@ export default function SignalsPage() {
     setLoading(true);
     setError(null);
     try {
-      const [rows, nextSummary, profile] = await Promise.all([
+      const [rows, nextSummary] = await Promise.all([
         apiClient.signals(token, view === "open" ? "open" : "all"),
         apiClient.signalSummary(token),
-        apiClient.me(token),
       ]);
       setSignals(view === "history" ? rows.filter((s) => s.status !== "open") : rows);
       setSummary(nextSummary);
-      setTradeProfile({
-        broker: profile.broker,
-        maxRiskPerTrade: profile.riskSettings?.maxRiskPerTrade ?? null,
-      });
+      // Soft profile for order actions — don't block signal list on /me.
+      void apiClient
+        .me(token)
+        .then((profile) => {
+          setTradeProfile({
+            broker: profile.broker,
+            maxRiskPerTrade: profile.riskSettings?.maxRiskPerTrade ?? null,
+          });
+        })
+        .catch(() => undefined);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Sinyaller yüklenemedi");
     } finally {
@@ -87,12 +92,18 @@ export default function SignalsPage() {
     setError(null);
     try {
       const result = await apiClient.generateSignals(session.accessToken);
-      setNotice(
-        `${result.predictions} tahmin · ${result.signalsCreated} yeni açık sinyal`,
-      );
+      if (result.queued) {
+        setNotice(
+          "Sinyal üretimi kuyruğa alındı — birkaç dakika içinde tamamlanır.",
+        );
+      } else {
+        setNotice(
+          `${result.predictions ?? 0} tahmin · ${result.signalsCreated ?? 0} yeni açık sinyal`,
+        );
+      }
       await refresh();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Sinyal üretimi başarısız");
+      setError(networkErrorMessage(err, "Sinyal üretimi başarısız"));
     } finally {
       setGenerating(false);
     }

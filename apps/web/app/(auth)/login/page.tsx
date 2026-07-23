@@ -16,6 +16,7 @@ export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [rememberMe, setRememberMe] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -26,6 +27,7 @@ export default function LoginPage() {
     const res = await signIn("credentials", {
       email,
       password,
+      rememberMe: rememberMe ? "true" : "false",
       redirect: false,
     });
     setLoading(false);
@@ -88,6 +90,17 @@ export default function LoginPage() {
                   required
                 />
               </div>
+              <label className="flex cursor-pointer items-center gap-2.5 select-none">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-border accent-primary"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                />
+                <span className="text-sm text-muted-foreground">
+                  Beni hatırla <span className="text-xs opacity-70">(30 gün)</span>
+                </span>
+              </label>
               {error ? <p className="text-sm text-destructive">{error}</p> : null}
               <Button
                 type="submit"

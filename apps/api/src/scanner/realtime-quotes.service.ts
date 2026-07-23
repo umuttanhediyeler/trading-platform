@@ -13,7 +13,6 @@ import {
 } from '../market-data/providers/market-data-provider.interface';
 import { QuoteCacheService } from '../market-data/quote-cache.service';
 import {
-  MAX_REALTIME_SYMBOLS,
   REALTIME_UNIVERSE_SIZE,
   UNIVERSE,
   mergeUniverseWithWatchlists,
@@ -85,8 +84,25 @@ export class RealtimeQuotesService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** Universe top-N plus all watchlist symbols, capped. */
+  /**
+   * Prefer open simulated positions (need prices to auto-close), then
+   * watchlists, then liquid universe — hard-capped at REALTIME_UNIVERSE_SIZE
+   * (30). Alpaca IEX rejects larger WS subscriptions (405 symbol limit).
+   */
   private async desiredSymbols(): Promise<string[]> {
+    const priority: string[] = [];
+    try {
+      const openSim = await this.prisma.simulatedOrder.findMany({
+        where: { status: 'open' },
+        select: { symbol: true },
+      });
+      priority.push(...openSim.map((row) => row.symbol));
+    } catch (err) {
+      this.logger.warn(
+        `Could not load open sim symbols: ${(err as Error).message}`,
+      );
+    }
+
     let watchlistSymbols: string[] = [];
     try {
       const watchlists = await this.prisma.watchlist.findMany({
@@ -99,10 +115,11 @@ export class RealtimeQuotesService implements OnModuleInit, OnModuleDestroy {
         `Could not load watchlist symbols: ${(err as Error).message}`,
       );
     }
+
     return mergeUniverseWithWatchlists(
-      UNIVERSE.slice(0, REALTIME_UNIVERSE_SIZE),
-      watchlistSymbols,
-      MAX_REALTIME_SYMBOLS,
+      priority,
+      [...watchlistSymbols, ...UNIVERSE.slice(0, REALTIME_UNIVERSE_SIZE)],
+      REALTIME_UNIVERSE_SIZE,
     );
   }
 

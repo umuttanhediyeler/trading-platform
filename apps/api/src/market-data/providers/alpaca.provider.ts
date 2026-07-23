@@ -252,8 +252,10 @@ export class AlpacaDataProvider implements MarketDataProvider {
               current.send(
                 JSON.stringify({
                   action: 'subscribe',
+                  // Trades alone are enough for last price. Subscribing to both
+                  // trades+quotes doubles the symbol budget and trips IEX's
+                  // ~30-symbol WS limit (405).
                   trades: unique,
-                  quotes: unique,
                 }),
               );
               this.logger.log(`Alpaca WS authenticated (${this.feed})`);

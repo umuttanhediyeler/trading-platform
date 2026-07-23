@@ -7,7 +7,13 @@ import {
   Res,
   UnauthorizedException,
 } from '@nestjs/common';
-import { IsEmail, IsOptional, IsString, MinLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsEmail,
+  IsOptional,
+  IsString,
+  MinLength,
+} from 'class-validator';
 import { Request, Response } from 'express';
 import { AuthService, AuthTokens } from './auth.service';
 
@@ -26,6 +32,10 @@ class LoginDto {
 
   @IsString()
   password!: string;
+
+  @IsOptional()
+  @IsBoolean()
+  rememberMe?: boolean;
 }
 
 class RefreshDto {
@@ -37,10 +47,15 @@ class RefreshDto {
 class GoogleLoginDto {
   @IsString()
   idToken!: string;
+
+  @IsOptional()
+  @IsBoolean()
+  rememberMe?: boolean;
 }
 
 const REFRESH_COOKIE = 'refresh_token';
-const REFRESH_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const REFRESH_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // match longest refresh
+const REFRESH_SHORT_MS = 24 * 60 * 60 * 1000;
 
 @Controller('auth')
 export class AuthController {
@@ -52,7 +67,7 @@ export class AuthController {
     @Res({ passthrough: true }) res: Response,
   ) {
     const tokens = await this.authService.register(dto.email, dto.password);
-    return this.respond(res, tokens);
+    return this.respond(res, tokens, false);
   }
 
   @Post('login')
@@ -61,8 +76,13 @@ export class AuthController {
     @Body() dto: LoginDto,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const tokens = await this.authService.login(dto.email, dto.password);
-    return this.respond(res, tokens);
+    const rememberMe = Boolean(dto.rememberMe);
+    const tokens = await this.authService.login(
+      dto.email,
+      dto.password,
+      rememberMe,
+    );
+    return this.respond(res, tokens, rememberMe);
   }
 
   @Post('google')
@@ -71,8 +91,12 @@ export class AuthController {
     @Body() dto: GoogleLoginDto,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const tokens = await this.authService.loginWithGoogle(dto.idToken);
-    return this.respond(res, tokens);
+    const rememberMe = dto.rememberMe !== false;
+    const tokens = await this.authService.loginWithGoogle(
+      dto.idToken,
+      rememberMe,
+    );
+    return this.respond(res, tokens, rememberMe);
   }
 
   @Post('refresh')
@@ -88,22 +112,27 @@ export class AuthController {
       throw new UnauthorizedException('Missing refresh token');
     }
     const tokens = await this.authService.refresh(token);
-    return this.respond(res, tokens);
+    return this.respond(res, tokens, true);
   }
 
   /**
    * Refresh token goes into an httpOnly cookie and is also returned in the
    * body so the NextAuth server (a different origin in dev) can store and
    * rotate it inside its own encrypted session cookie.
+   * Login also returns `user` so the web client skips a second /users/me hop.
    */
-  private respond(res: Response, tokens: AuthTokens) {
+  private respond(res: Response, tokens: AuthTokens, rememberMe: boolean) {
     res.cookie(REFRESH_COOKIE, tokens.refreshToken, {
       httpOnly: true,
       sameSite: 'lax',
       secure: process.env.NODE_ENV === 'production',
-      maxAge: REFRESH_MAX_AGE_MS,
+      maxAge: rememberMe ? REFRESH_MAX_AGE_MS : REFRESH_SHORT_MS,
       path: '/auth',
     });
-    return { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken };
+    return {
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      user: tokens.user,
+    };
   }
 }

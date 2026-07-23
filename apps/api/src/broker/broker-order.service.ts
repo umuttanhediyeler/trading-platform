@@ -124,6 +124,13 @@ export class BrokerOrderService {
       return this.resolveDuplicate(existing);
     }
 
+    // Preflight BEFORE creating a ledger row so risk rejects never flash as
+    // "Bekleyen" in the UI (auto-trade retries every minute).
+    await this.riskGuard.assertCanTrade(userId, {
+      includesPendingReservation: false,
+    });
+    await this.riskGuard.assertBrokerOrderAllowed(userId, credentials, order);
+
     try {
       await this.prisma.brokerOrderLedger.create({
         data: {
@@ -153,12 +160,11 @@ export class BrokerOrderService {
     }
 
     try {
-      // Run after reserving the idempotency key so concurrent submissions are
-      // visible to the daily-trade limit before either reaches the broker.
+      // Re-check daily limit after reserving so concurrent submissions race
+      // safely; exposure already passed preflight above.
       await this.riskGuard.assertCanTrade(userId, {
         includesPendingReservation: true,
       });
-      await this.riskGuard.assertBrokerOrderAllowed(userId, credentials, order);
       const brokerOrder = await adapter.placeOrder(credentials, {
         ...order,
         symbol: order.symbol.toUpperCase(),

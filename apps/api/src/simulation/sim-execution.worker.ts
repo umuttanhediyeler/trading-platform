@@ -1,4 +1,5 @@
 import {
+  Inject,
   Injectable,
   Logger,
   OnModuleDestroy,
@@ -7,15 +8,22 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Queue, Worker } from 'bullmq';
 import { bullmqConnection } from '../common/bullmq-redis';
+import {
+  MARKET_DATA_PROVIDER,
+  MarketDataProvider,
+} from '../market-data/providers/market-data-provider.interface';
 import { QuoteCacheService } from '../market-data/quote-cache.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 export const SIM_EXECUTION_QUEUE = 'sim-execution';
 
 /**
- * Periodically checks open simulated orders against latest cached prices and
+ * Periodically checks open simulated orders against latest prices and
  * closes them when stop or target is hit — the "virtual execution" that
  * auto-simulates every AI signal with real prices but no real money.
+ *
+ * Price source: Redis quote cache first, then provider REST getQuote so
+ * symbols outside the Alpaca WS cap (IEX ~30) still resolve.
  */
 @Injectable()
 export class SimExecutionWorker implements OnModuleInit, OnModuleDestroy {
@@ -27,6 +35,8 @@ export class SimExecutionWorker implements OnModuleInit, OnModuleDestroy {
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
     private readonly quoteCache: QuoteCacheService,
+    @Inject(MARKET_DATA_PROVIDER)
+    private readonly marketData: MarketDataProvider,
   ) {}
 
   async onModuleInit() {
@@ -61,13 +71,23 @@ export class SimExecutionWorker implements OnModuleInit, OnModuleDestroy {
       where: { status: 'open' },
     });
 
-    for (const order of openOrders) {
-      const cached = await this.quoteCache
-        .getQuote(order.symbol)
-        .catch(() => null);
-      if (!cached) continue;
+    // Cap REST fallbacks per tick so we don't starve the auth connection pool.
+    let restFetches = 0;
+    const MAX_REST_FETCHES = 25;
 
-      const price = cached.quote.price;
+    for (const order of openOrders) {
+      const cached = await this.quoteCache.getQuote(order.symbol).catch(() => null);
+      let price: number | null =
+        cached?.quote?.price && Number.isFinite(cached.quote.price)
+          ? cached.quote.price
+          : null;
+      if (price == null) {
+        if (restFetches >= MAX_REST_FETCHES) continue;
+        restFetches += 1;
+        price = await this.resolvePrice(order.symbol);
+      }
+      if (price == null) continue;
+
       const stop = Number(order.stopPrice);
       const target = Number(order.targetPrice);
       const isBuy = order.side === 'buy';
@@ -95,6 +115,25 @@ export class SimExecutionWorker implements OnModuleInit, OnModuleDestroy {
       this.logger.log(
         `Sim order ${order.id} (${order.symbol}) closed at ${exitPrice}, pnl=${pnl.toFixed(2)}`,
       );
+    }
+  }
+
+  /** Cache hit, else REST quote (and warm the cache for the UI). */
+  private async resolvePrice(symbol: string): Promise<number | null> {
+    const cached = await this.quoteCache.getQuote(symbol).catch(() => null);
+    if (cached?.quote?.price && Number.isFinite(cached.quote.price)) {
+      return cached.quote.price;
+    }
+    try {
+      const quote = await this.marketData.getQuote(symbol.toUpperCase());
+      if (!quote?.price || !Number.isFinite(quote.price)) return null;
+      await this.quoteCache.setQuote(quote).catch(() => undefined);
+      return quote.price;
+    } catch (err) {
+      this.logger.warn(
+        `Sim quote miss ${symbol}: ${(err as Error).message}`,
+      );
+      return null;
     }
   }
 

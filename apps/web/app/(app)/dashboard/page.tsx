@@ -65,62 +65,42 @@ export default function DashboardPage() {
     }
   }, [token, demoMode]);
 
-  // Load the user's first saved scan and run it against the live API so the
-  // table reflects real market data instead of the demo rows.
+  // Lightweight mount: signals + watchlists. Do NOT auto-runScan —
+  // that POST stampeded the API on every dashboard visit.
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
 
-    (async () => {
-      try {
-        const scans = await apiClient.listScans(token);
-        if (scans.length === 0 || cancelled) return;
-        const result = await apiClient.runScan(token, scans[0].id);
-        if (cancelled || result.rows.length === 0) return;
-        setRows(result.rows);
-        setSelected(result.rows[0]);
-        setFocusSymbol(result.rows[0]?.symbol ?? null);
-        setRowsLive(true);
-      } catch {
-        if (demoMode && !cancelled) {
-          setRows(DEMO_SCAN_ROWS);
-          setSelected(DEMO_SCAN_ROWS[0] ?? null);
-          setFocusSymbol(DEMO_SCAN_ROWS[0]?.symbol ?? null);
-        }
-      }
-    })();
+    if (demoMode) {
+      setRows(DEMO_SCAN_ROWS);
+      setSelected(DEMO_SCAN_ROWS[0] ?? null);
+      setFocusSymbol(DEMO_SCAN_ROWS[0]?.symbol ?? null);
+    }
 
-    (async () => {
-      try {
-        const live = await apiClient.signals(token);
+    void apiClient
+      .signals(token)
+      .then((live) => {
         if (!cancelled) setSignals(live);
-      } catch {
-        // leave empty unless demo mode
-      }
-    })();
+      })
+      .catch(() => undefined);
 
-    (async () => {
-      try {
-        const lists = await apiClient.listWatchlists(token);
+    void apiClient
+      .listWatchlists(token)
+      .then((lists) => {
         if (!cancelled) setWatchlists(lists);
-      } catch {
-        // watchlists optional for dashboard
-      }
-    })();
+      })
+      .catch(() => undefined);
 
-    (async () => {
-      try {
-        const profile = await apiClient.me(token);
-        if (!cancelled) {
-          setTradeProfile({
-            broker: profile.broker,
-            maxRiskPerTrade: profile.riskSettings?.maxRiskPerTrade ?? null,
-          });
-        }
-      } catch {
-        // Trading remains disabled until broker/risk state can be verified.
-      }
-    })();
+    void apiClient
+      .me(token)
+      .then((profile) => {
+        if (cancelled) return;
+        setTradeProfile({
+          broker: profile.broker,
+          maxRiskPerTrade: profile.riskSettings?.maxRiskPerTrade ?? null,
+        });
+      })
+      .catch(() => undefined);
 
     return () => {
       cancelled = true;

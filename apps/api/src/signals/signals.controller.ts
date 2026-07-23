@@ -66,27 +66,30 @@ export class SignalsController {
       orderBy: { generatedAt: 'desc' },
       take,
     });
-    return rows.map((s) => {
-      const entryPrice = Number(s.entryPrice);
-      const stopPrice = Number(s.stopPrice);
-      const targetPrice = Number(s.targetPrice);
-      return {
-        id: s.id,
-        symbol: s.symbol,
-        strategyId: s.strategyId,
-        entryPrice,
-        stopPrice,
-        targetPrice,
-        side: inferSignalSide(entryPrice, stopPrice, targetPrice),
-        confidence: s.confidence,
-        generatedAt: s.generatedAt.toISOString(),
-        status: s.status,
-        resolvedAt: s.resolvedAt?.toISOString() ?? null,
-        resolvedPrice:
-          s.resolvedPrice === null ? null : Number(s.resolvedPrice),
-        realizedReturn: s.realizedReturn,
-        modelVersion: s.modelVersion,
-      };
-    });
+    // Product is long-only: hide inverted (short) barrier geometry from the feed.
+    return rows
+      .map((s) => {
+        const entryPrice = Number(s.entryPrice);
+        const stopPrice = Number(s.stopPrice);
+        const targetPrice = Number(s.targetPrice);
+        return {
+          id: s.id,
+          symbol: s.symbol,
+          strategyId: s.strategyId,
+          entryPrice,
+          stopPrice,
+          targetPrice,
+          side: inferSignalSide(entryPrice, stopPrice, targetPrice),
+          confidence: s.confidence,
+          generatedAt: s.generatedAt.toISOString(),
+          status: s.status,
+          resolvedAt: s.resolvedAt?.toISOString() ?? null,
+          resolvedPrice:
+            s.resolvedPrice === null ? null : Number(s.resolvedPrice),
+          realizedReturn: s.realizedReturn,
+          modelVersion: s.modelVersion,
+        };
+      })
+      .filter((s) => s.side === 'buy');
   }
 }

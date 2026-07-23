@@ -55,18 +55,30 @@ export class ModelsController {
       },
     });
     const openSignals = await this.prisma.signal.count({ where: { status: 'open' } });
+    // Decisive outcomes only — expired rows used to crowd the window and made
+    // hitRate look like ~10% with a tiny TP/SL denominator.
     const resolved = await this.prisma.signal.findMany({
-      where: { status: { in: ['hit_target', 'hit_stop', 'expired'] } },
+      where: { status: { in: ['hit_target', 'hit_stop'] } },
       orderBy: { resolvedAt: 'desc' },
-      take: 50,
+      take: 100,
     });
     const hits = resolved.filter((s) => s.status === 'hit_target').length;
     const stops = resolved.filter((s) => s.status === 'hit_stop').length;
-    // Production stream only: hidden shadow inferences must not distort the
-    // user-facing drift/calibration metrics.
-    const recentPredictions = await this.prisma.prediction.findMany({
+    // Drift still needs recent feature rows (labels optional).
+    const recentForDrift = await this.prisma.prediction.findMany({
       where: { fallback: false, shadow: false },
       orderBy: { createdAt: 'desc' },
+      take: 200,
+      select: { features: true },
+    });
+    // Brier needs actualLabel — newest unlabeled predictions are useless here.
+    const labeledPredictions = await this.prisma.prediction.findMany({
+      where: {
+        fallback: false,
+        shadow: false,
+        actualLabel: { not: null },
+      },
+      orderBy: { resolvedAt: 'desc' },
       take: 200,
       select: {
         features: true,
@@ -74,8 +86,8 @@ export class ModelsController {
         actualLabel: true,
       },
     });
-    const drift = computeDrift(extractFeatureRows(recentPredictions));
-    const calibration = computeBrier(recentPredictions);
+    const drift = computeDrift(extractFeatureRows(recentForDrift));
+    const calibration = computeBrier(labeledPredictions);
 
     // Shadow soak status per challenger, computed over the current soak
     // window only (post-rollback resets discard stale history).
@@ -156,7 +168,7 @@ export class ModelsController {
 
   @Post('generate-signals')
   generate() {
-    return this.ml.generateSignals();
+    return this.ml.enqueueGenerateSignals();
   }
 
   @Post('resolve-signals')

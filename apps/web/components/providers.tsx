@@ -3,10 +3,10 @@
 import { SessionProvider } from "next-auth/react";
 
 export function Providers({ children }: { children: React.ReactNode }) {
-  // Re-fetch the session every 5 minutes so the embedded API access token
-  // (15 min TTL) is rotated server-side before it expires.
+  // Access tokens last 30m–2h; refresh only on a calm interval.
+  // Window-focus refetch stampeded /api/auth/session during navigation.
   return (
-    <SessionProvider refetchInterval={5 * 60} refetchOnWindowFocus>
+    <SessionProvider refetchInterval={10 * 60} refetchOnWindowFocus={false}>
       {children}
     </SessionProvider>
   );
