@@ -69,6 +69,14 @@ export class ModelLifecycleService implements OnModuleInit, OnModuleDestroy {
     return Number(this.config.get('MODEL_ROLLBACK_HIT_RATE', '0.45'));
   }
 
+  /** Only score live outcomes inside this window for rollback decisions. */
+  private get rollbackLookbackHours(): number {
+    const configured = Number(
+      this.config.get('MODEL_ROLLBACK_LOOKBACK_HOURS', '168'),
+    );
+    return Math.max(24, Number.isFinite(configured) ? configured : 168);
+  }
+
   /**
    * Minimum shadow soak age before a challenger may be promoted. Clamped to
    * at least 24h so a weekly retrain can never be promoted the same day it
@@ -153,11 +161,17 @@ export class ModelLifecycleService implements OnModuleInit, OnModuleDestroy {
     const champions = await this.prisma.modelRegistry.findMany({
       where: { isActive: true },
     });
+    // Only score recent live outcomes so a pre-fix stop streak cannot
+    // immediately vacuum the book again after we restore a champion.
+    const recentSince = new Date(
+      Date.now() - this.rollbackLookbackHours * 60 * 60 * 1000,
+    );
     for (const champion of champions) {
       const outcomes = await this.prisma.signal.findMany({
         where: {
           modelVersion: champion.version,
           status: { in: ['hit_target', 'hit_stop'] },
+          resolvedAt: { gte: recentSince },
         },
         orderBy: { resolvedAt: 'desc' },
         take: 50,
@@ -170,15 +184,45 @@ export class ModelLifecycleService implements OnModuleInit, OnModuleDestroy {
 
       const reason =
         `live hit rate ${(hitRate * 100).toFixed(1)}% over ${outcomes.length} ` +
-        `signals is below rollback threshold ${(this.rollbackHitRate * 100).toFixed(0)}%`;
+        `signals (last ${this.rollbackLookbackHours}h) is below rollback threshold ` +
+        `${(this.rollbackHitRate * 100).toFixed(0)}%`;
+
+      // Never demote into a vacuum: require a soak-ready successor first.
+      const successor = await this.findPromotableSuccessor(champion, report);
+      if (!successor) {
+        report.holds.push({
+          version: champion.version,
+          regime: champion.regime,
+          reason: `rollback deferred (no ready successor): ${reason}`,
+        });
+        this.logger.warn(
+          `Kept underperforming champion ${champion.version}: no soak-ready successor`,
+        );
+        continue;
+      }
+
+      try {
+        await this.ml.promoteModel(successor.version);
+        report.promotions.push({
+          version: successor.version,
+          regime: successor.regime,
+          reason: `successor replaces underperforming ${champion.version}; ${reason}`,
+        });
+      } catch (err) {
+        report.holds.push({
+          version: champion.version,
+          regime: champion.regime,
+          reason: `rollback aborted (successor promote failed: ${(err as Error).message})`,
+        });
+        continue;
+      }
+
       await this.prisma.modelRegistry.update({
         where: { version: champion.version },
         data: {
           isActive: false,
           status: 'shadow',
           promotionReason: `auto-rollback: ${reason}`,
-          // Restart the soak clock: a demoted champion must re-earn promotion
-          // on fresh shadow outcomes, not on its stale pre-rollback history.
           shadowStartedAt: new Date(),
         },
       });
@@ -191,8 +235,48 @@ export class ModelLifecycleService implements OnModuleInit, OnModuleDestroy {
         version: champion.version,
         regime: champion.regime,
         reason,
+        successor: successor.version,
       });
     }
+  }
+
+  /**
+   * Best shadow challenger that already clears soak gates for this champion's
+   * regime / strategy slot. Used to avoid demoting into an empty book.
+   */
+  private async findPromotableSuccessor(
+    champion: {
+      version: string;
+      regime: string;
+      strategyId: string | null;
+      expectancy: number;
+      precision: number;
+    },
+    report: LifecycleReport,
+  ) {
+    const challengers = await this.prisma.modelRegistry.findMany({
+      where: {
+        isActive: false,
+        status: 'shadow',
+        version: { not: champion.version },
+        ...(champion.strategyId
+          ? { strategyId: champion.strategyId }
+          : { regime: champion.regime }),
+      },
+      orderBy: { expectancy: 'desc' },
+      take: 20,
+    });
+    for (const best of challengers) {
+      if (report.rollbacks.some((r) => r.version === best.version)) continue;
+      const beatsChampion =
+        best.expectancy > champion.expectancy &&
+        best.precision >= champion.precision * 0.95;
+      if (!beatsChampion) continue;
+      const soak = await this.evaluateSoakGates(best, champion);
+      if (!soak.passed) continue;
+      return best;
+    }
+    return null;
   }
 
   private async promoteBestChallengers(report: LifecycleReport) {

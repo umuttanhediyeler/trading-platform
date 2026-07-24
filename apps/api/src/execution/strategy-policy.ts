@@ -20,7 +20,13 @@
 export const PRIMARY_STRATEGY_ID = 'tb_balanced' as const;
 
 /** Default production confidence floor for signal creation. */
-export const PRIMARY_MIN_CONFIDENCE = 0.7;
+export const PRIMARY_MIN_CONFIDENCE = 0.75;
+
+/**
+ * Auto-trade only takes setups at/above this quality score
+ * (see tradeQualityScore — ~1.0 ≈ conf 0.7 / R:R 2).
+ */
+export const MIN_AUTO_TRADE_QUALITY = 1.05;
 
 export function isBalancedForced(raw: string | undefined): boolean {
   return raw !== '0' && raw !== 'false';

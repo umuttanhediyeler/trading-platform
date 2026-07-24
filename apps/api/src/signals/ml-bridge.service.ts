@@ -27,6 +27,7 @@ import {
   PRIMARY_MIN_CONFIDENCE,
   PRIMARY_STRATEGY_ID,
 } from '../execution/strategy-policy';
+import { computeLiveHitRate } from '../execution/live-hit-rate';
 import {
   MARKET_DATA_PROVIDER,
   MarketDataProvider,
@@ -1174,6 +1175,16 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
     const concurrency = Math.max(1, Math.min(options?.concurrency ?? 4, 12));
     const preferProviderBars = options?.preferProviderBars !== false;
 
+    const liveHit = await computeLiveHitRate(this.prisma);
+    const pauseNewSignals = liveHit.entriesPaused;
+    if (pauseNewSignals) {
+      this.logger.warn(
+        `Signal creation paused: live hit rate ` +
+          `${((liveHit.hitRate ?? 0) * 100).toFixed(1)}% over ${liveHit.sampleSize} ` +
+          `< 45% — resolving/exits continue`,
+      );
+    }
+
     const signalUniverse = await this.signalUniverse.build();
     const [shadowCandidatesByRegime, activeModels, premiumUsers] =
       await Promise.all([
@@ -1281,7 +1292,8 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
           prediction.fallback ||
           !prediction.model_version ||
           prediction.prediction !== 'tp' ||
-          prediction.confidence < minConfidence
+          prediction.confidence < minConfidence ||
+          pauseNewSignals
         ) {
           return {
             predictions: 1,

@@ -16,6 +16,7 @@ import { decryptSecret } from '../common/crypto';
 import { killSwitchTriggersTotal } from '../metrics/counters';
 import { PrismaService } from '../prisma/prisma.service';
 import { ExecutionGateway } from './execution.gateway';
+import { computeLiveHitRate } from './live-hit-rate';
 
 const DEFAULT_MAX_TOTAL_EXPOSURE_PCT = 70;
 
@@ -186,6 +187,17 @@ export class RiskGuardService {
     const entryEstimate = order.limitPrice ?? order.entryPriceHint;
     const stopPrice = order.stopLossPrice;
     const isExit = order.side === 'sell';
+
+    // 0. Live hit-rate entry pause — sells always allowed so the book can heal.
+    if (!isExit) {
+      const live = await computeLiveHitRate(this.prisma);
+      if (live.entriesPaused) {
+        throw new ForbiddenException(
+          `New buys paused: live hit rate ${((live.hitRate ?? 0) * 100).toFixed(1)}% ` +
+            `over ${live.sampleSize} signals is below 45% — exits remain enabled`,
+        );
+      }
+    }
 
     // 1. Per-trade risk (entries only — exits reduce risk).
     if (!isExit && entryEstimate && stopPrice) {

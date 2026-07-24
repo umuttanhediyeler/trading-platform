@@ -18,6 +18,8 @@ import {
   tradeQualityScore,
 } from './position-sizing';
 import { computeRiskTargets, inferSignalSide } from './risk-targets';
+import { computeLiveHitRate } from './live-hit-rate';
+import { MIN_AUTO_TRADE_QUALITY } from './strategy-policy';
 
 export const AUTO_TRADE_QUEUE = 'auto-trade';
 
@@ -145,6 +147,16 @@ export class AutoTradeWorker implements OnModuleInit, OnModuleDestroy {
           continue;
         }
 
+        const liveHit = await computeLiveHitRate(this.prisma);
+        if (liveHit.entriesPaused) {
+          this.logger.warn(
+            `Auto-trade buys paused for ${user.id}: hit rate ` +
+              `${((liveHit.hitRate ?? 0) * 100).toFixed(1)}% ` +
+              `(${liveHit.hits}/${liveHit.sampleSize}) < 45% — exits still active`,
+          );
+          continue;
+        }
+
         let equity = 100_000;
         let currentExposure = 0;
         try {
@@ -221,6 +233,7 @@ export class AutoTradeWorker implements OnModuleInit, OnModuleDestroy {
             };
           })
           .filter((row): row is NonNullable<typeof row> => row != null)
+          .filter((row) => row.quality >= MIN_AUTO_TRADE_QUALITY)
           .sort((a, b) => b.quality - a.quality);
 
         let stopNewEntries = false;
