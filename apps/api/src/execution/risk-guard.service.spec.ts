@@ -154,6 +154,29 @@ describe('RiskGuardService (broker-aware)', () => {
       ).resolves.toBeUndefined();
     });
 
+    it('allows sells even when long exposure is already over the cap', async () => {
+      (adapter.getPositions as jest.Mock).mockResolvedValue([
+        {
+          symbol: 'MSFT',
+          quantity: 100,
+          avgEntryPrice: 300,
+          marketValue: 30_000,
+          unrealizedPnl: 0,
+        },
+      ]);
+
+      await expect(
+        service.assertBrokerOrderAllowed('user-1', credentials, {
+          symbol: 'MSFT',
+          side: 'sell',
+          quantity: 100,
+          type: 'market',
+          clientOrderId: 'exit-1',
+          entryPriceHint: 300,
+        }),
+      ).resolves.toBeUndefined();
+    });
+
     it('trips the kill switch when daily broker fills breach the loss limit', async () => {
       // Buy 10 @ 100, sell 10 @ 70 → -$300 = 3% of equity ≥ 2% limit.
       filledLedgerOrders = [

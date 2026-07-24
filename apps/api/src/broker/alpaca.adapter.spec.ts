@@ -72,6 +72,7 @@ describe('AlpacaAdapter', () => {
       qty: '5',
       side: 'buy',
       type: 'market',
+      time_in_force: 'gtc',
       client_order_id: 'signal-1:user-1',
       order_class: 'bracket',
       take_profit: { limit_price: '110' },

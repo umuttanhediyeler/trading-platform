@@ -54,7 +54,7 @@ export class BinanceAdapter implements BrokerAdapter {
     order: BrokerOrderRequest,
   ): Promise<BrokerOrder> {
     const symbol = this.normalizeSymbol(order.symbol);
-    if (order.orderClass === 'bracket') {
+    if (order.orderClass === 'bracket' || order.orderClass === 'oco') {
       throw new BadRequestException(
         'Binance Spot does not support atomic bracket orders; submit a simple order and manage exits separately',
       );

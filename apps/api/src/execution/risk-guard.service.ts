@@ -82,9 +82,12 @@ export class RiskGuardService {
       },
     });
 
+    // Buys only — exit sells must never consume the daily entry quota or
+    // leave the book unable to flatten when the day is "full".
     const brokerOrderCount = await this.prisma.brokerOrderLedger.count({
       where: {
         userId,
+        side: 'buy',
         createdAt: { gte: startOfDay },
         status: { in: ['pending', 'submitted'] },
       },
@@ -182,9 +185,10 @@ export class RiskGuardService {
 
     const entryEstimate = order.limitPrice ?? order.entryPriceHint;
     const stopPrice = order.stopLossPrice;
+    const isExit = order.side === 'sell';
 
-    // 1. Per-trade risk (only when we know both entry and stop).
-    if (entryEstimate && stopPrice) {
+    // 1. Per-trade risk (entries only — exits reduce risk).
+    if (!isExit && entryEstimate && stopPrice) {
       const riskAmount = order.quantity * Math.abs(entryEstimate - stopPrice);
       const maxRisk = equity * (settings.maxRiskPerTrade / 100);
       if (riskAmount > maxRisk) {
@@ -194,33 +198,36 @@ export class RiskGuardService {
       }
     }
 
-    // 2. Total exposure cap.
-    const maxExposurePct = this.maxTotalExposurePct();
-    let positionsValue = 0;
-    try {
-      const positions = await adapter.getPositions(credentials);
-      positionsValue = positions.reduce(
-        (sum, p) => sum + Math.abs(Number(p.marketValue) || 0),
-        0,
+    // 2. Total exposure cap — never block sells/exits (that freezes the book).
+    if (!isExit) {
+      const maxExposurePct = this.maxTotalExposurePct();
+      let positionsValue = 0;
+      try {
+        const positions = await adapter.getPositions(credentials);
+        // Longs only: shorts must not inflate the long-entry budget.
+        positionsValue = positions
+          .filter((p) => Number(p.quantity) > 0)
+          .reduce((sum, p) => sum + Math.abs(Number(p.marketValue) || 0), 0);
+      } catch (error) {
+        this.logger.warn(
+          `Exposure check using ledger only for ${userId} (positions unavailable): ${this.errorMessage(error)}`,
+        );
+      }
+      const openOrdersNotional = await this.openLedgerOrdersNotional(
+        userId,
+        order.clientOrderId,
       );
-    } catch (error) {
-      this.logger.warn(
-        `Exposure check using ledger only for ${userId} (positions unavailable): ${this.errorMessage(error)}`,
-      );
-    }
-    const openOrdersNotional = await this.openLedgerOrdersNotional(
-      userId,
-      order.clientOrderId,
-    );
-    const newOrderNotional = entryEstimate
-      ? order.quantity * entryEstimate
-      : 0;
-    const totalExposure = positionsValue + openOrdersNotional + newOrderNotional;
-    const maxExposure = equity * (maxExposurePct / 100);
-    if (totalExposure > maxExposure) {
-      throw new ForbiddenException(
-        `Total exposure $${totalExposure.toFixed(2)} would exceed ${maxExposurePct}% of equity ($${maxExposure.toFixed(2)})`,
-      );
+      const newOrderNotional = entryEstimate
+        ? order.quantity * entryEstimate
+        : 0;
+      const totalExposure =
+        positionsValue + openOrdersNotional + newOrderNotional;
+      const maxExposure = equity * (maxExposurePct / 100);
+      if (totalExposure > maxExposure) {
+        throw new ForbiddenException(
+          `Total exposure $${totalExposure.toFixed(2)} would exceed ${maxExposurePct}% of equity ($${maxExposure.toFixed(2)})`,
+        );
+      }
     }
 
     // 3. Daily realized broker PnL. Only enforceable when ledger fills carry

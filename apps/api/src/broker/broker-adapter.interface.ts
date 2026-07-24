@@ -16,11 +16,11 @@ export interface BrokerOrderRequest {
   limitPrice?: number;
   /** Idempotency key — the same signal must never open two orders. */
   clientOrderId: string;
-  /** bracket = entry + attached take-profit and stop-loss legs. */
-  orderClass?: 'simple' | 'bracket';
-  /** Required when orderClass is bracket. */
+  /** bracket = entry+TP/SL; oco = protect an existing long with TP/SL. */
+  orderClass?: 'simple' | 'bracket' | 'oco';
+  /** Required when orderClass is bracket or oco. */
   takeProfitPrice?: number;
-  /** Required when orderClass is bracket. */
+  /** Required when orderClass is bracket or oco. */
   stopLossPrice?: number;
   /**
    * Estimated fill price for market orders (e.g. the signal entry price).

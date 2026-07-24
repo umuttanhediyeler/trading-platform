@@ -625,8 +625,8 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Queue barrier resolution. Inline resolve walks every open signal + shadow
-   * row against market data and routinely exceeds the web client's 12s budget.
+   * Queue barrier resolution (cron). Prefer {@link startManualResolveSignals}
+   * for the UI button.
    */
   async enqueueResolveSignals(): Promise<{
     queued: true;
@@ -644,6 +644,77 @@ export class MlBridgeService implements OnModuleInit, OnModuleDestroy {
     );
     this.logger.log(`Manual signal resolve queued job=${job.id}`);
     return { queued: true, jobId: job.id };
+  }
+
+  private readonly resolveJobs = new Map<
+    string,
+    {
+      status: 'running' | 'done' | 'error';
+      startedAt: number;
+      resolved?: number;
+      shadowResolved?: number;
+      error?: string;
+      elapsedMs?: number;
+    }
+  >();
+
+  /** Kick off barrier resolution; client polls for counts (no "queued" UX). */
+  startManualResolveSignals(): { status: 'running'; jobId: string } {
+    const jobId = `res_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const startedAt = Date.now();
+    this.resolveJobs.set(jobId, { status: 'running', startedAt });
+    for (const [id, job] of this.resolveJobs) {
+      if (Date.now() - job.startedAt > 30 * 60_000) this.resolveJobs.delete(id);
+    }
+
+    void (async () => {
+      try {
+        const primary = await this.resolveOpenSignals();
+        const shadow = await this.resolveShadowEvaluations();
+        this.resolveJobs.set(jobId, {
+          status: 'done',
+          startedAt,
+          elapsedMs: Date.now() - startedAt,
+          resolved: primary.resolved,
+          shadowResolved: shadow.resolved,
+        });
+      } catch (err) {
+        this.resolveJobs.set(jobId, {
+          status: 'error',
+          startedAt,
+          elapsedMs: Date.now() - startedAt,
+          error: (err as Error).message,
+        });
+        this.logger.warn(
+          `Manual resolve job ${jobId} failed: ${(err as Error).message}`,
+        );
+      }
+    })();
+
+    this.logger.log(`Manual resolve started job=${jobId}`);
+    return { status: 'running', jobId };
+  }
+
+  getResolveJob(jobId: string): {
+    jobId: string;
+    status: 'running' | 'done' | 'error';
+    resolved?: number;
+    shadowResolved?: number;
+    error?: string;
+    elapsedMs?: number;
+  } {
+    const job = this.resolveJobs.get(jobId);
+    if (!job) {
+      throw new NotFoundException(`Resolve job not found: ${jobId}`);
+    }
+    return {
+      jobId,
+      status: job.status,
+      resolved: job.resolved,
+      shadowResolved: job.shadowResolved,
+      error: job.error,
+      elapsedMs: job.elapsedMs,
+    };
   }
 
   /**

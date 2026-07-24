@@ -83,15 +83,9 @@ export default function ModelsPage() {
     setNotice(null);
     try {
       const result = await apiClient.resolveSignals(session.accessToken);
-      if (result.queued) {
-        setNotice(
-          "Sinyal çözümleme kuyruğa alındı. Birkaç dakika içinde tamamlanır.",
-        );
-      } else {
-        setNotice(
-          `${result.resolved ?? 0} sinyal, ${result.shadowResolved ?? 0} gölge değerlendirme çözümlendi.`,
-        );
-      }
+      setNotice(
+        `${result.resolved ?? 0} sinyal, ${result.shadowResolved ?? 0} gölge değerlendirme çözümlendi.`,
+      );
       await load();
     } catch (err) {
       setError(networkErrorMessage(err, "Sinyal çözümleme başarısız"));

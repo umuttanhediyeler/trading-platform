@@ -262,9 +262,21 @@ export class ModelsController implements OnModuleInit {
   }
 
   @Post('resolve-signals')
-  resolve() {
+  async resolve() {
     this.listCache = null;
-    return this.ml.enqueueResolveSignals();
+    // Run inline so the UI shows real counts (not a "queued" notice).
+    // Client timeout for this path is 30s; open-signal set is capped.
+    const primary = await this.ml.resolveOpenSignals();
+    const shadow = await this.ml.resolveShadowEvaluations();
+    return {
+      resolved: primary.resolved,
+      shadowResolved: shadow.resolved,
+    };
+  }
+
+  @Get('resolve-signals/jobs/:jobId')
+  resolveJob(@Param('jobId') jobId: string) {
+    return this.ml.getResolveJob(jobId);
   }
 
   @Post(':version/promote')

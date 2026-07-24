@@ -400,17 +400,48 @@ export const apiClient = {
     throw new ApiError("Signal generation timed out after 180000ms", 408);
   },
 
-  resolveSignals: (token: string) =>
-    request<{
-      queued?: boolean;
+  resolveSignals: async (token: string) => {
+    // Prefer sync counts from API. Fall back to job polling if a job id is returned.
+    type ResolveResult = {
+      status?: "running" | "done" | "error";
       jobId?: string;
       resolved?: number;
       shadowResolved?: number;
-    }>("/models/resolve-signals", {
+      error?: string;
+      queued?: boolean;
+    };
+
+    const started = await request<ResolveResult>("/models/resolve-signals", {
       method: "POST",
       token,
-      timeoutMs: 20_000,
-    }),
+      timeoutMs: 90_000,
+    });
+
+    if (typeof started.resolved === "number") {
+      return started;
+    }
+
+    if (!started.jobId) {
+      return {
+        resolved: started.resolved ?? 0,
+        shadowResolved: started.shadowResolved ?? 0,
+      };
+    }
+
+    const deadline = Date.now() + 180_000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const job = await request<ResolveResult>(
+        `/models/resolve-signals/jobs/${encodeURIComponent(started.jobId)}`,
+        { token, timeoutMs: 15_000 },
+      );
+      if (job.status === "done") return job;
+      if (job.status === "error") {
+        throw new ApiError(job.error || "Signal resolve failed", 500);
+      }
+    }
+    throw new ApiError("Signal resolve timed out after 180000ms", 408);
+  },
 
   runModelLifecycle: (token: string) =>
     request<{

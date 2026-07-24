@@ -21,6 +21,25 @@ import { computeRiskTargets, inferSignalSide } from './risk-targets';
 
 export const AUTO_TRADE_QUEUE = 'auto-trade';
 
+/** US cash equity regular session (Mon–Fri 09:30–16:00 America/New_York). */
+export function isUsEquityRegularHours(now = new Date()): boolean {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(now);
+  const weekday = parts.find((p) => p.type === 'weekday')?.value ?? '';
+  if (weekday === 'Sat' || weekday === 'Sun') return false;
+  const hour = Number(parts.find((p) => p.type === 'hour')?.value ?? '0');
+  const minute = Number(parts.find((p) => p.type === 'minute')?.value ?? '0');
+  // Intl may emit "24" for midnight in some engines.
+  const h = hour === 24 ? 0 : hour;
+  const mins = h * 60 + minute;
+  return mins >= 9 * 60 + 30 && mins < 16 * 60;
+}
+
 /**
  * Full-auto execution: every minute, look for recent open AI signals and
  * submit paper/live broker orders for users in full_auto mode who pass
@@ -115,6 +134,16 @@ export class AutoTradeWorker implements OnModuleInit, OnModuleDestroy {
         // Take-profit / stop exits first so capital frees before new entries.
         await this.closeResolvedLongs(user.id, creds);
         await this.closeLongsAtTargets(user.id, creds);
+        await this.protectNakedLongs(user.id, creds);
+
+        // New entries only in US cash equity RTH — overnight market/bracket
+        // day orders sit as "new" with no position (Alpaca recent orders ≠ positions).
+        if (!isUsEquityRegularHours()) {
+          this.logger.debug(
+            `Auto-trade entries skipped outside US RTH for ${user.id}`,
+          );
+          continue;
+        }
 
         let equity = 100_000;
         let currentExposure = 0;
@@ -137,10 +166,12 @@ export class AutoTradeWorker implements OnModuleInit, OnModuleDestroy {
           const positions = await this.registry
             .get(creds.broker)
             .getPositions(creds);
-          currentExposure = positions.reduce(
-            (sum, p) => sum + Math.abs(Number(p.marketValue) || 0),
-            0,
-          );
+          currentExposure = positions
+            .filter((p) => p.quantity > 0)
+            .reduce(
+              (sum, p) => sum + Math.abs(Number(p.marketValue) || 0),
+              0,
+            );
           heldSymbols = new Set(
             positions.filter((p) => p.quantity > 0).map((p) => p.symbol),
           );
@@ -383,6 +414,33 @@ export class AutoTradeWorker implements OnModuleInit, OnModuleDestroy {
       });
       if (!entry) continue;
 
+      // Already queued/held for an open sell — do not double-submit.
+      const openSell = await this.prisma.brokerOrderLedger.findFirst({
+        where: {
+          userId,
+          symbol: signal.symbol,
+          side: 'sell',
+          status: { in: ['pending', 'submitted'] },
+          OR: [
+            { brokerStatus: null },
+            {
+              brokerStatus: {
+                notIn: [
+                  'filled',
+                  'canceled',
+                  'cancelled',
+                  'expired',
+                  'rejected',
+                  'done_for_day',
+                ],
+              },
+            },
+          ],
+        },
+        select: { id: true },
+      });
+      if (openSell) continue;
+
       const exitClientId = `exit:${signal.id}:${userId}`.slice(0, 48);
       const existingExit = await this.prisma.brokerOrderLedger.findUnique({
         where: {
@@ -522,6 +580,132 @@ export class AutoTradeWorker implements OnModuleInit, OnModuleDestroy {
       } catch (err) {
         this.logger.warn(
           `Auto-trade price-exit failed ${pos.symbol} for ${userId}: ${(err as Error).message}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * After day-TIF bracket legs expire, longs sit naked. Re-attach GTC OCO
+   * take-profit / stop-loss from the original entry payload when no open
+   * sell already protects the symbol.
+   */
+  private async protectNakedLongs(
+    userId: string,
+    creds: {
+      broker: string;
+      apiKey: string;
+      apiSecret: string;
+      mode: 'paper' | 'live';
+    },
+  ) {
+    if (creds.broker !== 'alpaca') return;
+
+    let positions;
+    try {
+      positions = await this.registry.get(creds.broker).getPositions(creds);
+    } catch {
+      return;
+    }
+    const longs = positions.filter((p) => p.quantity > 0);
+    if (longs.length === 0) return;
+
+    // Symbols that already have an open sell / OCO / market exit queued.
+    const openSellSymbols = new Set<string>();
+    const openBuys = await this.prisma.brokerOrderLedger.findMany({
+      where: {
+        userId,
+        side: 'sell',
+        status: { in: ['pending', 'submitted'] },
+        OR: [
+          { brokerStatus: null },
+          {
+            brokerStatus: {
+              notIn: [
+                'filled',
+                'canceled',
+                'cancelled',
+                'expired',
+                'rejected',
+                'done_for_day',
+              ],
+            },
+          },
+        ],
+      },
+      select: { symbol: true },
+      take: 200,
+    });
+    for (const row of openBuys) openSellSymbols.add(row.symbol.toUpperCase());
+
+    for (const pos of longs) {
+      const symbol = pos.symbol.toUpperCase();
+      if (openSellSymbols.has(symbol)) continue;
+
+      const buy = await this.prisma.brokerOrderLedger.findFirst({
+        where: {
+          userId,
+          symbol,
+          side: 'buy',
+          status: 'submitted',
+          source: 'full_auto',
+        },
+        orderBy: { createdAt: 'desc' },
+        select: { id: true, signalId: true, requestPayload: true },
+      });
+      if (!buy) continue;
+
+      const payload = (buy.requestPayload ?? {}) as {
+        takeProfitPrice?: number;
+        stopLossPrice?: number;
+      };
+      const tp = Number(payload.takeProfitPrice ?? 0);
+      const sl = Number(payload.stopLossPrice ?? 0);
+      if (!(tp > 0 && sl > 0 && tp > sl)) continue;
+
+      const qty = Math.floor(Math.abs(pos.quantity));
+      if (qty < 1) continue;
+
+      const clientOrderId = `oco:${buy.id}:${userId}`.slice(0, 48);
+      const existing = await this.prisma.brokerOrderLedger.findUnique({
+        where: { userId_clientOrderId: { userId, clientOrderId } },
+        select: { id: true, status: true },
+      });
+      if (existing && existing.status !== 'failed') continue;
+
+      try {
+        await this.orders.submit(
+          userId,
+          creds,
+          {
+            symbol,
+            side: 'sell',
+            quantity: qty,
+            type: 'limit',
+            limitPrice: tp,
+            clientOrderId:
+              existing?.status === 'failed'
+                ? `${clientOrderId}:${Date.now().toString(36)}`.slice(0, 48)
+                : clientOrderId,
+            orderClass: 'oco',
+            takeProfitPrice: tp,
+            stopLossPrice: sl,
+            entryPriceHint: pos.avgEntryPrice,
+          },
+          {
+            source: 'full_auto',
+            signalId: buy.signalId ?? undefined,
+            allowAutomatedLive:
+              this.config.get('ALLOW_FULL_AUTO_LIVE') === 'true',
+          },
+        );
+        openSellSymbols.add(symbol);
+        this.logger.log(
+          `Auto-trade re-armed OCO ${symbol} qty=${qty} tp=${tp} sl=${sl} for user ${userId}`,
+        );
+      } catch (err) {
+        this.logger.warn(
+          `Auto-trade OCO protect failed ${symbol} for ${userId}: ${(err as Error).message}`,
         );
       }
     }

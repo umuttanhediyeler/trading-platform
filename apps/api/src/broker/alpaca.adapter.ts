@@ -42,28 +42,39 @@ export class AlpacaAdapter implements BrokerAdapter {
     creds: BrokerCredentials,
     order: BrokerOrderRequest,
   ): Promise<BrokerOrder> {
+    // Brackets/OCO must be GTC: day TIF expires TP/SL at the close and leaves
+    // naked positions (the main reason stops never fired overnight).
+    const advanced =
+      order.orderClass === 'bracket' || order.orderClass === 'oco';
     const body: Record<string, unknown> = {
       symbol: order.symbol,
       qty: String(order.quantity),
       side: order.side,
       type: order.type,
-      time_in_force: 'day',
+      time_in_force: advanced ? 'gtc' : 'day',
       limit_price: order.limitPrice
         ? formatAlpacaPrice(order.limitPrice)
         : undefined,
       client_order_id: order.clientOrderId,
     };
-    if (order.orderClass === 'bracket') {
+    if (order.orderClass === 'bracket' || order.orderClass === 'oco') {
       if (!order.takeProfitPrice || !order.stopLossPrice) {
         throw new Error(
-          'Bracket orders require takeProfitPrice and stopLossPrice',
+          `${order.orderClass} orders require takeProfitPrice and stopLossPrice`,
         );
       }
-      body.order_class = 'bracket';
+      body.order_class = order.orderClass;
       body.take_profit = {
         limit_price: formatAlpacaPrice(order.takeProfitPrice),
       };
       body.stop_loss = { stop_price: formatAlpacaPrice(order.stopLossPrice) };
+      // OCO to protect an existing long is always a sell; type=limit with
+      // nested TP/SL legs (Alpaca OCO contract).
+      if (order.orderClass === 'oco') {
+        body.side = 'sell';
+        body.type = 'limit';
+        body.limit_price = formatAlpacaPrice(order.takeProfitPrice);
+      }
     }
     const data = await this.request(creds, 'POST', '/v2/orders', body);
     return this.mapOrder(data);
